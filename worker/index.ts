@@ -14,6 +14,7 @@ import {
   responseObject
 } from "./openai";
 import { submitWaitlist } from "./waitlist";
+import { encodeSse } from "./sse";
 import type { Deps, Env } from "./types";
 
 /**
@@ -256,11 +257,7 @@ function streamOpenAiResponse(
     } catch (error) {
       await input.onError(error);
       const message = error instanceof Error ? error.message : "Stream failed";
-      await writer.write(
-        kind === "chat"
-          ? chatChunk({ id: input.id, created: input.created, model: input.model, delta: `\n[composer-api error] ${message}` })
-          : responseDeltaEvent({ id: input.id, delta: `\n[composer-api error] ${message}` })
-      );
+      await writer.write(encodeSse({ error: { message, type: "cursor_error", code: "cursor_stream_error" } }, "error"));
     } finally {
       await writer.close().catch(() => undefined);
     }

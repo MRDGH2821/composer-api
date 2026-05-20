@@ -44,6 +44,42 @@ describe("Cursor stream adapter", () => {
     ]);
   });
 
+  it("strips Composer final markers when there is no think closing tag", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseThinking("Hidden reasoning <｜final｜>Visible answer")));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text", text: "Visible answer" },
+      { type: "done", finalText: "Visible answer" }
+    ]);
+  });
+
+  it("surfaces detailed Cursor end-stream errors", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(cursorError("Too many computers.", "Too many computers used within the last 24 hours."), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    await expect(async () => {
+      for await (const _event of streamCursorText(response)) {
+        // Drain stream.
+      }
+    }).rejects.toThrow("Too many computers used within the last 24 hours");
+  });
+
   it("extracts text deltas from Cursor interaction_update events", async () => {
     const response = new Response(
       new ReadableStream<Uint8Array>({
@@ -94,6 +130,18 @@ function connectFrame(payload: Uint8Array, flags = 0): Uint8Array {
   new DataView(frame.buffer).setUint32(1, payload.length, false);
   frame.set(payload, 5);
   return frame;
+}
+
+function cursorError(title: string, detail: string): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      error: {
+        code: "resource_exhausted",
+        message: "Error",
+        details: [{ debug: { details: { title, detail } } }]
+      }
+    })
+  );
 }
 
 function protoMessage(parts: Uint8Array[]): Uint8Array {

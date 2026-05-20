@@ -234,6 +234,36 @@ describe("Worker", () => {
     expect(db.requestLogs.size).toBe(1);
   });
 
+  it("streams Cursor errors as SSE errors instead of assistant text", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          stream: true,
+          messages: [{ role: "user", content: "Trigger Cursor error" }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("event: error");
+    expect(body).toContain("Too many computers used within the last 24 hours");
+    expect(body).not.toContain("[composer-api error]");
+  });
+
   it("requires a bearer token for /v1/models", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
@@ -309,7 +339,19 @@ function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeader
       if (url.pathname === "/private-cursor-chat-endpoint" && init?.method === "POST") {
         chatAuthHeaders.push(auth);
         expect(new Headers(init.headers).get("content-type")).toContain("application/connect+proto");
-        expect(decodeRequestBody(init.body)).toContain("Say hello");
+        const requestText = decodeRequestBody(init.body);
+        if (requestText.includes("Trigger Cursor error")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(connectFrame(cursorError("Too many computers.", "Too many computers used within the last 24 hours."), 2));
+                controller.close();
+              }
+            }),
+            { headers: { "Content-Type": "application/connect+proto" } }
+          );
+        }
+        expect(requestText).toContain("Say hello");
         return new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
@@ -325,6 +367,18 @@ function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeader
     }
   };
   return { deps, exchangeAuthHeaders, chatAuthHeaders };
+}
+
+function cursorError(title: string, detail: string): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      error: {
+        code: "resource_exhausted",
+        message: "Error",
+        details: [{ debug: { details: { title, detail } } }]
+      }
+    })
+  );
 }
 
 function decodeRequestBody(body: BodyInit | null | undefined): string {

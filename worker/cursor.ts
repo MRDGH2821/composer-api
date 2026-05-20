@@ -60,7 +60,7 @@ export async function createCursorCompletion(
   );
   const response = await cursorInternalRaw(env, deps, accessToken, "/private-cursor-chat-endpoint", {
     method: "POST",
-    headers: await cursorInternalHeaders(env, accessToken, requestId),
+    headers: await cursorInternalHeaders(env, accessToken, apiKey, requestId),
     body: requestBody.buffer as ArrayBuffer
   });
   return { requestId, conversationId, stream: response };
@@ -256,14 +256,14 @@ function parseCursorError(text: string): string | undefined {
   return text || undefined;
 }
 
-async function cursorInternalHeaders(env: Env, accessToken: string, requestId: string): Promise<Record<string, string>> {
+async function cursorInternalHeaders(env: Env, accessToken: string, cursorApiKey: string, requestId: string): Promise<Record<string, string>> {
   return {
     "Content-Type": "application/connect+proto",
     "Connect-Protocol-Version": "1",
     "User-Agent": "connect-es/1.6.1",
     "x-amzn-trace-id": `Root=${requestId}`,
     "x-client-key": await sha256Hex(accessToken),
-    "x-cursor-checksum": await cursorChecksum(accessToken),
+    "x-cursor-checksum": await cursorChecksum(cursorApiKey),
     "x-cursor-client-version": env.CURSOR_CLIENT_VERSION || "2.6.22",
     "x-cursor-client-type": "ide",
     "x-cursor-client-os": "linux",
@@ -382,7 +382,7 @@ function handleEndStreamFrame(payload: Uint8Array) {
   try {
     const parsed = JSON.parse(text) as unknown;
     if (isRecord(parsed) && isRecord(parsed.error)) {
-      const message = typeof parsed.error.message === "string" ? parsed.error.message : "Cursor stream failed";
+      const message = cursorStreamErrorMessage(parsed.error) || "Cursor stream failed";
       throw new HttpError(message, 502, "cursor_stream_error");
     }
   } catch (error) {
@@ -422,30 +422,40 @@ function decodeCursorChatFrame(payload: Uint8Array):
 }
 
 class ThinkingTextExtractor {
+  private static finalMarkers = ["</think>", "<|final|>", "<｜final｜>"];
   private buffer = "";
   private open = true;
 
   push(delta: string): string[] {
     if (!this.open) return [delta];
     this.buffer += delta;
-    const marker = this.buffer.lastIndexOf("</think>");
-    if (marker === -1) return [];
+    const marker = this.findFinalMarker();
+    if (!marker) return [];
     this.open = false;
-    const after = this.buffer.slice(marker + "</think>".length).replace(/^\s+/, "");
+    const after = this.buffer.slice(marker.index + marker.marker.length).replace(/^\s+/, "");
     this.buffer = "";
     return after ? [after] : [];
   }
 
   flush(): string {
     if (!this.open) return "";
-    const marker = this.buffer.lastIndexOf("</think>");
-    if (marker !== -1) {
-      const after = this.buffer.slice(marker + "</think>".length).replace(/^\s+/, "");
+    const marker = this.findFinalMarker();
+    if (marker) {
+      const after = this.buffer.slice(marker.index + marker.marker.length).replace(/^\s+/, "");
       this.buffer = "";
       return after;
     }
     this.buffer = "";
     return "";
+  }
+
+  private findFinalMarker(): { marker: string; index: number } | null {
+    let found: { marker: string; index: number } | null = null;
+    for (const marker of ThinkingTextExtractor.finalMarkers) {
+      const index = this.buffer.lastIndexOf(marker);
+      if (index !== -1 && (!found || index > found.index)) found = { marker, index };
+    }
+    return found;
   }
 }
 
@@ -527,8 +537,8 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function cursorChecksum(token: string): Promise<string> {
-  const machineId = await sha256Hex(`${token}machineId`);
+async function cursorChecksum(cursorApiKey: string): Promise<string> {
+  const machineId = await sha256Hex(`composer-api:${cursorApiKey}`);
   const timestamp = BigInt(Math.floor(Date.now() / 1_000_000));
   const bytes = new Uint8Array([
     Number((timestamp >> 40n) & 255n),
@@ -559,6 +569,26 @@ function base64Url(bytes: Uint8Array): string {
 
 function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
+}
+
+function cursorStreamErrorMessage(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined;
+  const titleAndDetail = detailFromCursorError(error);
+  if (titleAndDetail) return titleAndDetail;
+  return typeof error.message === "string" ? error.message : undefined;
+}
+
+function detailFromCursorError(error: Record<string, unknown>): string | undefined {
+  const details = Array.isArray(error.details) ? error.details : [];
+  for (const detail of details) {
+    if (!isRecord(detail) || !isRecord(detail.debug)) continue;
+    const debugDetails = isRecord(detail.debug.details) ? detail.debug.details : undefined;
+    const title = typeof debugDetails?.title === "string" ? debugDetails.title : "";
+    const body = typeof debugDetails?.detail === "string" ? debugDetails.detail : "";
+    const message = [title, body].filter(Boolean).join(" ");
+    if (message) return message;
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
