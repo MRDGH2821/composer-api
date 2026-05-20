@@ -2,6 +2,8 @@
 
 OpenAI-compatible `chat.completions` and `responses` endpoints backed by Cursor Composer through Cursor's public Cloud Agent API.
 
+Live deployment: https://composer-api.formkit.workers.dev
+
 ## What this is
 
 Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. The public SDK uses Cursor API keys against Cloud Agent endpoints:

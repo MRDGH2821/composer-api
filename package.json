@@ -4,6 +4,14 @@
   "private": false,
   "type": "module",
   "description": "OpenAI-compatible Chat Completions and Responses API proxy for Cursor Composer via Cursor Cloud Agent API.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/standardagents/composer-api.git"
+  },
+  "homepage": "https://github.com/standardagents/composer-api#readme",
+  "bugs": {
+    "url": "https://github.com/standardagents/composer-api/issues"
+  },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
