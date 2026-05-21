@@ -17,6 +17,7 @@ interface ProtobufField {
 }
 
 const cursorIdentityCache = new Map<string, { identity: string; expiresAt: number }>();
+const COMPOSER_CONTROL_TOKEN_PATTERN = /<\/think>|<\s*[|｜]\s*final\s*[|｜]\s*>/g;
 
 export async function verifyCursorApiKey(env: Env, deps: Deps, apiKey: string): Promise<CursorMe> {
   return cursorPublicJson<CursorMe>(env, deps, apiKey, "/v1/me");
@@ -91,20 +92,29 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
       throw new HttpError("Cursor requested a tool call, but this OpenAI-compatible proxy runs with tools disabled.", 502, "cursor_tool_call");
     }
     if (event.type === "text" && event.text) {
-      text += event.text;
-      yield { type: "text", text: event.text };
+      const delta = stripComposerControlTokens(event.text);
+      if (delta) {
+        text += delta;
+        yield { type: "text", text: delta };
+      }
     }
     if (event.type === "thinking" && event.text) {
       for (const delta of thinking.push(event.text)) {
-        text += delta;
-        yield { type: "text", text: delta };
+        const cleaned = stripComposerControlTokens(delta);
+        if (cleaned) {
+          text += cleaned;
+          yield { type: "text", text: cleaned };
+        }
       }
     }
   }
   const flushed = thinking.flush();
   if (flushed) {
-    text += flushed;
-    yield { type: "text", text: flushed };
+    const delta = stripComposerControlTokens(flushed);
+    if (delta) {
+      text += delta;
+      yield { type: "text", text: delta };
+    }
   }
   yield { type: "done", finalText: text };
 }
@@ -126,23 +136,30 @@ async function* streamLegacyAgentText(response: Response): AsyncGenerator<Cursor
       const type = payload.type;
       if (type === "text-delta" && typeof payload.text === "string" && mode !== "assistant") {
         mode = "delta";
-        text += payload.text;
-        yield { type: "text", text: payload.text };
+        const delta = stripComposerControlTokens(payload.text);
+        if (delta) {
+          text += delta;
+          yield { type: "text", text: delta };
+        }
       } else if (type === "summary" && typeof payload.summary === "string" && !text && mode === "unknown") {
-        text = payload.summary;
+        text = stripComposerControlTokens(payload.summary);
       }
       continue;
     }
 
     if (event.event === "assistant" && isRecord(payload) && typeof payload.text === "string" && mode !== "delta") {
       mode = "assistant";
-      text += payload.text;
-      yield { type: "text", text: payload.text };
+      const delta = stripComposerControlTokens(payload.text);
+      if (delta) {
+        text += delta;
+        yield { type: "text", text: delta };
+      }
       continue;
     }
 
     if (event.event === "result" && isRecord(payload)) {
-      const result = typeof payload.result === "string" ? payload.result : typeof payload.text === "string" ? payload.text : "";
+      const rawResult = typeof payload.result === "string" ? payload.result : typeof payload.text === "string" ? payload.text : "";
+      const result = stripComposerControlTokens(rawResult);
       if (!text && result) text = result;
       yield { type: "done", finalText: text };
       return;
@@ -442,8 +459,26 @@ function decodeCursorChatFrame(payload: Uint8Array):
   }
 }
 
+function findComposerControlToken(value: string): { index: number; length: number } | null {
+  let found: { index: number; length: number } | null = null;
+  const pattern = new RegExp(COMPOSER_CONTROL_TOKEN_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    found = { index: match.index, length: match[0].length };
+  }
+  return found;
+}
+
+function stripComposerControlTokens(value: string): string {
+  const marker = findComposerControlToken(value);
+  if (!marker) return value;
+  return value
+    .slice(marker.index + marker.length)
+    .replace(COMPOSER_CONTROL_TOKEN_PATTERN, "")
+    .replace(/^\s+/, "");
+}
+
 class ThinkingTextExtractor {
-  private static finalMarkers = ["</think>", "<|final|>", "<｜final｜>"];
   private buffer = "";
   private open = true;
 
@@ -453,7 +488,7 @@ class ThinkingTextExtractor {
     const marker = this.findFinalMarker();
     if (!marker) return [];
     this.open = false;
-    const after = this.buffer.slice(marker.index + marker.marker.length).replace(/^\s+/, "");
+    const after = this.buffer.slice(marker.index + marker.length).replace(/^\s+/, "");
     this.buffer = "";
     return after ? [after] : [];
   }
@@ -462,7 +497,7 @@ class ThinkingTextExtractor {
     if (!this.open) return "";
     const marker = this.findFinalMarker();
     if (marker) {
-      const after = this.buffer.slice(marker.index + marker.marker.length).replace(/^\s+/, "");
+      const after = this.buffer.slice(marker.index + marker.length).replace(/^\s+/, "");
       this.buffer = "";
       return after;
     }
@@ -470,13 +505,8 @@ class ThinkingTextExtractor {
     return "";
   }
 
-  private findFinalMarker(): { marker: string; index: number } | null {
-    let found: { marker: string; index: number } | null = null;
-    for (const marker of ThinkingTextExtractor.finalMarkers) {
-      const index = this.buffer.lastIndexOf(marker);
-      if (index !== -1 && (!found || index > found.index)) found = { marker, index };
-    }
-    return found;
+  private findFinalMarker(): { index: number; length: number } | null {
+    return findComposerControlToken(this.buffer);
   }
 }
 

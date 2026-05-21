@@ -128,13 +128,14 @@ function setToolState(state: ToolState, text: string) {
 }
 
 // Internal Composer markers that should never be echoed back in the request.
-const COMPOSER_MARKERS = ["</think>", "<|final|>", "<｜final｜>"];
+const COMPOSER_MARKER_PATTERN = /<\/think>|<\s*[|｜]\s*final\s*[|｜]\s*>/g;
 
 function sanitizeAssistantContent(content: string) {
   let markerEnd = 0;
-  for (const marker of COMPOSER_MARKERS) {
-    const markerIndex = content.lastIndexOf(marker);
-    if (markerIndex !== -1) markerEnd = Math.max(markerEnd, markerIndex + marker.length);
+  const markerPattern = new RegExp(COMPOSER_MARKER_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = markerPattern.exec(content))) {
+    markerEnd = Math.max(markerEnd, match.index + match[0].length);
   }
   return content.slice(markerEnd).trim();
 }
@@ -193,7 +194,7 @@ function messageNode(role: "user" | "assistant", content: string): HTMLElement {
     <span class="msg-avatar">${iconToSvg(icon, { width: 15, height: 15, "aria-hidden": "true" })}</span>
     <div class="msg-body"></div>`;
   const body = node.querySelector<HTMLElement>(".msg-body");
-  if (body) body.textContent = content;
+  if (body) body.textContent = role === "assistant" ? sanitizeAssistantContent(content) : content;
   return node;
 }
 
