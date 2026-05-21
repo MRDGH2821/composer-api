@@ -1734,6 +1734,13 @@ code {
     --sa-bar-offset: 42px;
   }
 
+  /* iOS Safari zooms focused form controls when their font is below 16px. */
+  input:not([type="checkbox"]),
+  textarea:not([readonly]),
+  select:not([multiple]) {
+    font-size: 16px;
+  }
+
   .shell {
     width: calc(100% - 28px);
   }
