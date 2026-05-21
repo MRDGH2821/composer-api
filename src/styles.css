@@ -203,7 +203,7 @@ code {
   right: clamp(-260px, -24vw, -110px);
   width: min(560px, 88vw);
   height: auto;
-  opacity: 0.06;
+  opacity: 0.045;
   filter: grayscale(1);
   pointer-events: none;
   user-select: none;
@@ -1883,7 +1883,7 @@ code {
     top: -62px;
     right: -146px;
     width: 380px;
-    opacity: 0.05;
+    opacity: 0.04;
   }
 
   .hero-lede {
