@@ -97,6 +97,38 @@ describe("Worker", () => {
     expect(exchangeAuthHeaders).toContain("Bearer cursor_direct_key");
   });
 
+  it("keeps the Cursor machine identity stable across API key rotations for the same account", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps, chatRequestHeaders } = fakeDeps();
+
+    for (const key of ["cursor_direct_key_one", "cursor_direct_key_two"]) {
+      const completion = await handleRequest(
+        new Request("https://composer.test/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${key}`
+          },
+          body: JSON.stringify({
+            model: "composer-2.5",
+            messages: [{ role: "user", content: "Say hello" }]
+          })
+        }),
+        env,
+        fakeCtx(),
+        deps
+      );
+      expect(completion.status).toBe(200);
+      await completion.json();
+    }
+
+    expect(chatRequestHeaders).toHaveLength(2);
+    const machineIds = chatRequestHeaders.map((headers) => headers.get("x-cursor-checksum")?.slice(-64));
+    expect(machineIds[0]).toBe(machineIds[1]);
+    expect(chatRequestHeaders[0].get("x-cursor-config-version")).toBe(chatRequestHeaders[1].get("x-cursor-config-version"));
+  });
+
   it("streams SSE chat chunks in direct mode when stream is true", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
@@ -313,9 +345,10 @@ describe("Worker", () => {
   });
 });
 
-function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeaders: string[] } {
+function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeaders: string[]; chatRequestHeaders: Headers[] } {
   const exchangeAuthHeaders: string[] = [];
   const chatAuthHeaders: string[] = [];
+  const chatRequestHeaders: Headers[] = [];
   const deps: Deps = {
     now: () => new Date("2026-05-20T12:00:00.000Z"),
     randomUUID: () => "00000000-0000-4000-8000-000000000000",
@@ -337,8 +370,10 @@ function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeader
         return Response.json({ accessToken: "cursor_access_token" });
       }
       if (url.pathname === "/private-cursor-chat-endpoint" && init?.method === "POST") {
+        const headers = new Headers(init.headers);
         chatAuthHeaders.push(auth);
-        expect(new Headers(init.headers).get("content-type")).toContain("application/connect+proto");
+        chatRequestHeaders.push(headers);
+        expect(headers.get("content-type")).toContain("application/connect+proto");
         const requestText = decodeRequestBody(init.body);
         if (requestText.includes("Trigger Cursor error")) {
           return new Response(
@@ -366,7 +401,7 @@ function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeader
       return new Response("not found", { status: 404 });
     }
   };
-  return { deps, exchangeAuthHeaders, chatAuthHeaders };
+  return { deps, exchangeAuthHeaders, chatAuthHeaders, chatRequestHeaders };
 }
 
 function cursorError(title: string, detail: string): Uint8Array {

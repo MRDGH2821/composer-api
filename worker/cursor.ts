@@ -16,6 +16,8 @@ interface ProtobufField {
   value: number | Uint8Array;
 }
 
+const cursorIdentityCache = new Map<string, { identity: string; expiresAt: number }>();
+
 export async function verifyCursorApiKey(env: Env, deps: Deps, apiKey: string): Promise<CursorMe> {
   return cursorPublicJson<CursorMe>(env, deps, apiKey, "/v1/me");
 }
@@ -46,6 +48,7 @@ export async function createCursorCompletion(
   if (input.prompt.images?.length) {
     throw new HttpError("Image input is not supported by the Cursor Cursor adapter adapter yet.", 400, "unsupported_parameter", "image");
   }
+  const cursorIdentity = await getCursorAccountIdentity(env, deps, apiKey);
   const accessToken = await exchangeCursorApiKey(env, deps, apiKey);
   const requestId = deps.randomUUID();
   const conversationId = deps.randomUUID();
@@ -60,7 +63,7 @@ export async function createCursorCompletion(
   );
   const response = await cursorInternalRaw(env, deps, accessToken, "/private-cursor-chat-endpoint", {
     method: "POST",
-    headers: await cursorInternalHeaders(env, accessToken, apiKey, requestId),
+    headers: await cursorInternalHeaders(env, accessToken, cursorIdentity, requestId),
     body: requestBody.buffer as ArrayBuffer
   });
   return { requestId, conversationId, stream: response };
@@ -173,6 +176,24 @@ async function exchangeCursorApiKey(env: Env, deps: Deps, apiKey: string): Promi
   return payload.accessToken;
 }
 
+async function getCursorAccountIdentity(env: Env, deps: Deps, apiKey: string): Promise<string> {
+  const apiKeyHash = await sha256Hex(apiKey);
+  const now = deps.now().getTime();
+  const cached = cursorIdentityCache.get(apiKeyHash);
+  if (cached && cached.expiresAt > now) return cached.identity;
+
+  const me = await verifyCursorApiKey(env, deps, apiKey);
+  const identity =
+    typeof me.userId === "number"
+      ? `cursor-user:${me.userId}`
+      : me.userEmail
+        ? `cursor-email:${me.userEmail.trim().toLowerCase()}`
+        : `cursor-key:${apiKeyHash}`;
+
+  cursorIdentityCache.set(apiKeyHash, { identity, expiresAt: now + 60 * 60 * 1000 });
+  return identity;
+}
+
 async function cursorPublicJson<T>(
   env: Env,
   deps: Deps,
@@ -256,21 +277,21 @@ function parseCursorError(text: string): string | undefined {
   return text || undefined;
 }
 
-async function cursorInternalHeaders(env: Env, accessToken: string, cursorApiKey: string, requestId: string): Promise<Record<string, string>> {
+async function cursorInternalHeaders(env: Env, accessToken: string, cursorIdentity: string, requestId: string): Promise<Record<string, string>> {
   return {
     "Content-Type": "application/connect+proto",
     "Connect-Protocol-Version": "1",
     "User-Agent": "connect-es/1.6.1",
     "x-amzn-trace-id": `Root=${requestId}`,
     "x-client-key": await sha256Hex(accessToken),
-    "x-cursor-checksum": await cursorChecksum(cursorApiKey),
+    "x-cursor-checksum": await cursorChecksum(env, cursorIdentity),
     "x-cursor-client-version": env.CURSOR_CLIENT_VERSION || "2.6.22",
     "x-cursor-client-type": "ide",
     "x-cursor-client-os": "linux",
     "x-cursor-client-arch": "x64",
     "x-cursor-client-os-version": "unknown",
     "x-cursor-client-device-type": "desktop",
-    "x-cursor-config-version": crypto.randomUUID(),
+    "x-cursor-config-version": await stableUuid("cursor-config", cursorIdentity),
     "x-cursor-timezone": "UTC",
     "x-ghost-mode": "false",
     "x-new-onboarding-completed": "false",
@@ -537,8 +558,8 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function cursorChecksum(cursorApiKey: string): Promise<string> {
-  const machineId = await sha256Hex(`composer-api:${cursorApiKey}`);
+async function cursorChecksum(env: Env, cursorIdentity: string): Promise<string> {
+  const machineId = await sha256Hex(`${env.ENCRYPTION_KEY || "composer-api"}:cursor-machine:${cursorIdentity}`);
   const timestamp = BigInt(Math.floor(Date.now() / 1_000_000));
   const bytes = new Uint8Array([
     Number((timestamp >> 40n) & 255n),
@@ -554,6 +575,11 @@ async function cursorChecksum(cursorApiKey: string): Promise<string> {
     t = bytes[i];
   }
   return `${base64Url(bytes)}${machineId}`;
+}
+
+async function stableUuid(namespace: string, value: string): Promise<string> {
+  const hash = (await sha256Hex(`${namespace}:${value}`)).slice(0, 32);
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
 }
 
 async function sessionId(token: string): Promise<string> {
