@@ -16,6 +16,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -33,6 +34,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@cursor/sdk": "^1.0.13",
     "lucide": "^0.557.0"
   },
   "devDependencies": {

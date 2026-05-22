@@ -90,25 +90,36 @@ print(response.output_text)
 
 ## OpenCode
 
-OpenCode supports custom OpenAI-compatible providers through `@ai-sdk/openai-compatible`, so you can point it at this proxy and use your Cursor API key as the provider key.
+OpenCode works best through the local Responses bridge in this repo. The bridge talks to OpenCode as a stateful `/v1/responses` provider, then lets the Cursor SDK run a local agent against your project folder.
+
+Start the bridge from this repo, pointing it at the project you want OpenCode to edit:
+
+```bash
+export CURSOR_API_KEY="crsr_..."
+CURSOR_SDK_PROXY_CWD="/path/to/your/project" npm run sdk:responses
+```
 
 Add a custom provider to `~/.config/opencode/opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "cursor/composer-2.5",
+  "model": "cursor-sdk/composer-2.5",
   "provider": {
-    "cursor": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Cursor",
+    "cursor-sdk": {
+      "npm": "@ai-sdk/openai",
+      "name": "Cursor SDK",
       "options": {
-        "baseURL": "{{BASE_URL}}",
+        "baseURL": "http://127.0.0.1:8791/v1",
         "apiKey": "{env:CURSOR_API_KEY}"
       },
       "models": {
         "composer-2.5": {
-          "name": "Composer 2.5"
+          "name": "Composer 2.5",
+          "limit": {
+            "context": 200000,
+            "output": 65536
+          }
         }
       }
     }
@@ -123,9 +134,7 @@ export CURSOR_API_KEY="crsr_..."
 opencode
 ```
 
-If you do not set `model`, run `/models` inside OpenCode and choose `cursor/composer-2.5`.
-
-OpenCode can send its normal coding tools. The proxy translates Composer tool-call markers back into OpenAI-compatible `tool_calls`, so OpenCode remains responsible for executing tools and sending tool results in the next request.
+If you do not set `model`, run `/models` inside OpenCode and choose `cursor-sdk/composer-2.5`.
 
 ## cURL
 
