@@ -54,7 +54,7 @@ describe("Cursor stream adapter", () => {
     expect(events).toEqual([
       { type: "text", text: "Hello" },
       { type: "text", text: " from Composer" },
-      { type: "done", finalText: "Hello from Composer" }
+      { type: "done", finalText: "Hello from Composer", toolCalls: [] }
     ]);
   });
 
@@ -74,7 +74,7 @@ describe("Cursor stream adapter", () => {
     for await (const event of streamCursorText(response)) events.push(event);
     expect(events).toEqual([
       { type: "text", text: "OK" },
-      { type: "done", finalText: "OK" }
+      { type: "done", finalText: "OK", toolCalls: [] }
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("Cursor stream adapter", () => {
     for await (const event of streamCursorText(response)) events.push(event);
     expect(events).toEqual([
       { type: "text", text: "Visible answer" },
-      { type: "done", finalText: "Visible answer" }
+      { type: "done", finalText: "Visible answer", toolCalls: [] }
     ]);
   });
 
@@ -114,7 +114,7 @@ describe("Cursor stream adapter", () => {
     expect(events).toEqual([
       { type: "text", text: "Visible answer" },
       { type: "text", text: "Second answer" },
-      { type: "done", finalText: "Visible answerSecond answer" }
+      { type: "done", finalText: "Visible answerSecond answer", toolCalls: [] }
     ]);
   });
 
@@ -136,7 +136,93 @@ describe("Cursor stream adapter", () => {
     for await (const event of streamCursorText(response)) events.push(event);
     expect(events).toEqual([
       { type: "text", text: "Visible answer" },
-      { type: "done", finalText: "Visible answer" }
+      { type: "done", finalText: "Visible answer", toolCalls: [] }
+    ]);
+  });
+
+  it("parses Composer tool-call markers into structured tool calls", async () => {
+    const marker = [
+      "Checking the workspace.\n",
+      "<|tool_calls_begin|><|tool_call_begin|>\n",
+      "Glob\n",
+      "<|tool_sep|>targeting\n",
+      "/Users/example/project/**\n",
+      "<|tool_sep|>glob_pattern\n",
+      "*\n",
+      "<|tool_call_end|><|tool_calls_end|>"
+    ].join("");
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseText(marker.slice(0, 45))));
+          controller.enqueue(connectFrame(chatResponseText(marker.slice(45))));
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text", text: "Checking the workspace.\n" },
+      {
+        type: "tool_call",
+        toolCall: {
+          name: "Glob",
+          arguments: {
+            targeting: "/Users/example/project/**",
+            glob_pattern: "*"
+          }
+        }
+      },
+      {
+        type: "done",
+        finalText: "Checking the workspace.\n",
+        toolCalls: [{ name: "Glob", arguments: { targeting: "/Users/example/project/**", glob_pattern: "*" } }]
+      }
+    ]);
+  });
+
+  it("parses Composer tool-call markers with direct parser", () => {
+    expect(
+      cursorTestExports.parseComposerToolCalls(
+        "< | tool_calls_begin | >< | tool_call_begin | >\nRead< | tool_sep | >path\nREADME.md< | tool_call_end | >< | tool_calls_end | >"
+      )
+    ).toEqual([{ name: "Read", arguments: { path: "README.md" } }]);
+  });
+
+  it("parses full-width Composer tool-call markers", () => {
+    expect(
+      cursorTestExports.parseComposerToolCalls(
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>\nglob\n<｜tool▁sep｜>glob_pattern\n*\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+      )
+    ).toEqual([{ name: "glob", arguments: { glob_pattern: "*" } }]);
+  });
+
+  it("does not emit leading whitespace before split tool-call markers", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(connectFrame(chatResponseText("\n<｜tool")));
+          controller.enqueue(
+            connectFrame(
+              chatResponseText(
+                "▁calls▁begin｜><｜tool▁call▁begin｜>\nglob\n<｜tool▁sep｜>glob_pattern\n*\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+              )
+            )
+          );
+          controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+          controller.close();
+        }
+      }),
+      { headers: { "Content-Type": "application/connect+proto" } }
+    );
+    const events = [];
+    for await (const event of streamCursorText(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "tool_call", toolCall: { name: "glob", arguments: { glob_pattern: "*" } } },
+      { type: "done", finalText: "", toolCalls: [{ name: "glob", arguments: { glob_pattern: "*" } }] }
     ]);
   });
 
@@ -173,7 +259,7 @@ describe("Cursor stream adapter", () => {
     expect(events).toEqual([
       { type: "text", text: "Hello" },
       { type: "text", text: " world" },
-      { type: "done", finalText: "Hello world" }
+      { type: "done", finalText: "Hello world", toolCalls: [] }
     ]);
   });
 
@@ -189,7 +275,7 @@ describe("Cursor stream adapter", () => {
     );
     const events = [];
     for await (const event of streamCursorText(response)) events.push(event);
-    expect(events.at(-1)).toEqual({ type: "done", finalText: "Legacy text" });
+    expect(events.at(-1)).toEqual({ type: "done", finalText: "Legacy text", toolCalls: [] });
   });
 });
 

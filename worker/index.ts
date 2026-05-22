@@ -1,4 +1,4 @@
-import { collectCursorText, createCursorCompletion, resolveCursorModel, streamCursorText, verifyCursorApiKey } from "./cursor";
+import { collectCursorOutput, createCursorCompletion, resolveCursorModel, streamCursorText, verifyCursorApiKey } from "./cursor";
 import { authenticateProxyKey, completeRequestLog, createRequestLog, saveSignup } from "./db";
 import { bearerToken, errorResponse, HttpError, json, notFound, openAiError, optionsResponse, parseJsonBody, sseResponse, unauthorized, withCors } from "./http";
 import {
@@ -11,11 +11,13 @@ import {
   responseCreatedEvents,
   responseDeltaEvent,
   responseDoneEvents,
-  responseObject
+  responseObject,
+  toOpenAiToolCalls
 } from "./openai";
 import { submitWaitlist } from "./waitlist";
 import { encodeSse } from "./sse";
 import type { Deps, Env } from "./types";
+import type { OpenAiToolSpec } from "./openai";
 
 /**
  * The two ways a `/v1/...` request can be authenticated:
@@ -218,6 +220,7 @@ async function handleOpenAiRoute(
         model: prepared.model,
         promptChars: prepared.promptChars,
         metadata: prepared.responseMetadata,
+        tools: prepared.tools,
         onDone: (text) =>
           finishLog({
             status: "completed",
@@ -231,10 +234,16 @@ async function handleOpenAiRoute(
       }, ctx);
     }
 
-    const text = await collectCursorText(completion.stream);
+    const output = await collectCursorOutput(completion.stream);
+    const toolCalls = toOpenAiToolCalls({
+      toolCalls: output.toolCalls,
+      tools: prepared.tools,
+      responseId: id
+    });
+    const completionChars = output.text.length + toolCalls.reduce((sum, toolCall) => sum + toolCall.function.arguments.length, 0);
     await finishLog({
       status: "completed",
-      completionChars: text.length
+      completionChars
     });
     if (route.kind === "chat") {
       return json(
@@ -242,7 +251,8 @@ async function handleOpenAiRoute(
           id,
           created,
           model: prepared.model,
-          text,
+          text: output.text,
+          toolCalls,
           promptChars: prepared.promptChars,
           metadata: prepared.responseMetadata
         })
@@ -253,7 +263,8 @@ async function handleOpenAiRoute(
         id,
         created,
         model: prepared.model,
-        text,
+        text: output.text,
+        toolCalls,
         promptChars: prepared.promptChars,
         metadata: prepared.responseMetadata
       })
@@ -276,6 +287,7 @@ function streamOpenAiResponse(
     model: string;
     promptChars: number;
     metadata?: Record<string, unknown>;
+    tools: OpenAiToolSpec[];
     onDone: (text: string) => Promise<void>;
     onError: (error: unknown) => Promise<void>;
   },
@@ -285,6 +297,9 @@ function streamOpenAiResponse(
   const writer = writable.getWriter();
   const pump = async () => {
     let text = "";
+    let toolCallCount = 0;
+    let finishReason: "stop" | "tool_calls" = "stop";
+    const streamedToolCalls: ReturnType<typeof toOpenAiToolCalls> = [];
     try {
       if (kind === "chat") {
         await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, role: "assistant" }));
@@ -298,16 +313,30 @@ function streamOpenAiResponse(
           if (kind === "chat") await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, delta: event.text }));
           else await writer.write(responseDeltaEvent({ id: input.id, delta: event.text }));
         }
-        if (event.type === "done" && event.finalText !== undefined) {
+        if (event.type === "tool_call") {
+          finishReason = "tool_calls";
+          const [toolCall] = toOpenAiToolCalls({
+            toolCalls: [event.toolCall],
+            tools: input.tools,
+            responseId: input.id,
+            startIndex: toolCallCount
+          });
+          if (toolCall) streamedToolCalls.push(toolCall);
+          if (kind === "chat" && toolCall) {
+            await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, toolCall: { index: toolCallCount, value: toolCall } }));
+          }
+          toolCallCount += 1;
+        }
+        if (event.type === "done") {
           text = event.finalText;
         }
       }
 
       if (kind === "chat") {
-        await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, finish: true }));
+        await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, finish: true, finishReason }));
         await writer.write(doneChunk());
       } else {
-        for (const event of responseDoneEvents({ ...input, text })) await writer.write(event);
+        for (const event of responseDoneEvents({ ...input, text, toolCalls: streamedToolCalls })) await writer.write(event);
       }
       await input.onDone(text);
     } catch (error) {

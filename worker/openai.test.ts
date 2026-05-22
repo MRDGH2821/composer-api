@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HttpError } from "./http";
-import { prepareChatRequest, prepareResponsesRequest, chatCompletionResponse, responseObject } from "./openai";
+import { prepareChatRequest, prepareResponsesRequest, chatCompletionResponse, responseObject, toOpenAiToolCalls } from "./openai";
 
 describe("OpenAI compatibility adapter", () => {
   it("converts chat messages and image URLs into Cursor prompts", () => {
@@ -57,17 +56,33 @@ describe("OpenAI compatibility adapter", () => {
     ]);
   });
 
-  it("rejects unsupported OpenAI function tools", () => {
-    expect(() =>
-      prepareChatRequest(
-        {
-          model: "composer-2.5",
-          messages: [{ role: "user", content: "hi" }],
-          tools: [{ type: "function", function: { name: "x" } }]
-        },
-        { id: "composer-2.5" }
-      )
-    ).toThrow(HttpError);
+  it("accepts OpenAI function tools and includes them in the Cursor prompt", () => {
+    const prepared = prepareChatRequest(
+      {
+        model: "composer-2.5",
+        messages: [{ role: "user", content: "list files" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "glob",
+              description: "Find files",
+              parameters: { type: "object", properties: { pattern: { type: "string" } } }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5" }
+    );
+    expect(prepared.tools).toEqual([
+      {
+        name: "glob",
+        description: "Find files",
+        parameters: { type: "object", properties: { pattern: { type: "string" } } }
+      }
+    ]);
+    expect(prepared.prompt.text).toContain("TOOLS:");
+    expect(prepared.prompt.text).toContain("glob: Find files");
   });
 
   it("converts Responses input arrays", () => {
@@ -108,6 +123,34 @@ describe("OpenAI compatibility adapter", () => {
     expect(response).toMatchObject({
       object: "response",
       output: [{ type: "message", content: [{ type: "output_text", text: "hello" }] }]
+    });
+  });
+
+  it("returns OpenAI-shaped tool call responses", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [{ name: "glob" }],
+      toolCalls: [{ name: "Glob", arguments: { glob_pattern: "*" } }]
+    });
+    const chat = chatCompletionResponse({
+      id: "chatcmpl_test",
+      created: 1,
+      model: "composer-2.5",
+      text: "",
+      toolCalls,
+      promptChars: 20
+    });
+    expect(chat).toMatchObject({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ type: "function", function: { name: "glob", arguments: "{\"glob_pattern\":\"*\"}" } }]
+          },
+          finish_reason: "tool_calls"
+        }
+      ]
     });
   });
 });

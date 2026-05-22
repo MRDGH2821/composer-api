@@ -64,6 +64,11 @@ export interface CursorPrompt {
   images?: CursorImage[];
 }
 
+export interface CursorToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface CursorCompletion {
   requestId: string;
   conversationId: string;

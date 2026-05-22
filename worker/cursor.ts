@@ -1,6 +1,6 @@
 import { HttpError } from "./http";
 import { parseSse } from "./sse";
-import type { CursorCompletion, CursorImage, CursorMe, CursorPrompt, Deps, Env } from "./types";
+import type { CursorCompletion, CursorImage, CursorMe, CursorPrompt, CursorToolCall, Deps, Env } from "./types";
 
 interface CursorModelResponse {
   items?: Array<{ id: string; displayName?: string; aliases?: string[] }>;
@@ -77,14 +77,14 @@ export async function createCursorCompletion(
 }
 
 export const cursorTestExports = {
-  encodeCursorChatRequest
+  encodeCursorChatRequest,
+  parseComposerToolCalls
 };
 
-export interface CursorTextEvent {
-  type: "text" | "done";
-  text?: string;
-  finalText?: string;
-}
+export type CursorTextEvent =
+  | { type: "text"; text: string }
+  | { type: "tool_call"; toolCall: CursorToolCall }
+  | { type: "done"; finalText: string; toolCalls: CursorToolCall[] };
 
 export async function* streamCursorText(response: Response): AsyncGenerator<CursorTextEvent> {
   const contentType = response.headers.get("content-type") || "";
@@ -94,13 +94,20 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
   }
 
   let text = "";
+  const toolCalls: CursorToolCall[] = [];
   const thinking = new ThinkingTextExtractor();
   const output = new ComposerOutputFilter();
-  const emit = function* (value: string): Generator<string> {
+  const toolMarkers = new ComposerToolCallFilter();
+  const emit = function* (value: string): Generator<CursorTextEvent> {
     for (const delta of output.push(value)) {
-      if (delta) {
-        text += delta;
-        yield delta;
+      for (const event of toolMarkers.push(delta)) {
+        if (event.type === "text") {
+          text += event.text;
+          yield event;
+        } else {
+          toolCalls.push(event.toolCall);
+          yield event;
+        }
       }
     }
   };
@@ -108,39 +115,64 @@ export async function* streamCursorText(response: Response): AsyncGenerator<Curs
     const event = decodeCursorChatFrame(frame);
     if (event.type === "error") throw new HttpError(event.message, 502, "cursor_stream_error");
     if (event.type === "tool_call") {
-      throw new HttpError("Cursor requested a tool call, but this OpenAI-compatible proxy runs with tools disabled.", 502, "cursor_tool_call");
+      if (event.toolCall) {
+        toolCalls.push(event.toolCall);
+        yield { type: "tool_call", toolCall: event.toolCall };
+      }
+      continue;
     }
     if (event.type === "text" && event.text) {
-      for (const delta of emit(event.text)) {
-        yield { type: "text", text: delta };
-      }
+      yield* emit(event.text);
     }
     if (event.type === "thinking" && event.text) {
       for (const delta of thinking.push(event.text)) {
-        for (const visible of emit(delta)) {
-          yield { type: "text", text: visible };
-        }
+        yield* emit(delta);
       }
     }
   }
   const flushed = thinking.flush();
   if (flushed) {
-    for (const delta of emit(flushed)) {
-      yield { type: "text", text: delta };
-    }
+    yield* emit(flushed);
   }
   for (const delta of output.flush()) {
-    if (delta) {
-      text += delta;
-      yield { type: "text", text: delta };
+    for (const event of toolMarkers.push(delta)) {
+      if (event.type === "text") {
+        text += event.text;
+        yield event;
+      } else {
+        toolCalls.push(event.toolCall);
+        yield event;
+      }
     }
   }
-  yield { type: "done", finalText: text };
+  for (const event of toolMarkers.flush()) {
+    if (event.type === "text") {
+      text += event.text;
+      yield event;
+    } else {
+      toolCalls.push(event.toolCall);
+      yield event;
+    }
+  }
+  yield { type: "done", finalText: text, toolCalls };
 }
 
 async function* streamLegacyAgentText(response: Response): AsyncGenerator<CursorTextEvent> {
   let text = "";
+  const toolCalls: CursorToolCall[] = [];
   let mode: "unknown" | "assistant" | "delta" = "unknown";
+  const toolMarkers = new ComposerToolCallFilter();
+  const emit = function* (value: string): Generator<CursorTextEvent> {
+    for (const event of toolMarkers.push(value)) {
+      if (event.type === "text") {
+        text += event.text;
+        yield event;
+      } else {
+        toolCalls.push(event.toolCall);
+        yield event;
+      }
+    }
+  };
   for await (const event of parseSse(response.body)) {
     if (event.event === "done") break;
     if (!event.data) continue;
@@ -156,10 +188,7 @@ async function* streamLegacyAgentText(response: Response): AsyncGenerator<Cursor
       if (type === "text-delta" && typeof payload.text === "string" && mode !== "assistant") {
         mode = "delta";
         const delta = stripComposerControlTokens(payload.text);
-        if (delta) {
-          text += delta;
-          yield { type: "text", text: delta };
-        }
+        if (delta) yield* emit(delta);
       } else if (type === "summary" && typeof payload.summary === "string" && !text && mode === "unknown") {
         text = stripComposerControlTokens(payload.summary);
       }
@@ -169,18 +198,26 @@ async function* streamLegacyAgentText(response: Response): AsyncGenerator<Cursor
     if (event.event === "assistant" && isRecord(payload) && typeof payload.text === "string" && mode !== "delta") {
       mode = "assistant";
       const delta = stripComposerControlTokens(payload.text);
-      if (delta) {
-        text += delta;
-        yield { type: "text", text: delta };
-      }
+      if (delta) yield* emit(delta);
       continue;
     }
 
     if (event.event === "result" && isRecord(payload)) {
       const rawResult = typeof payload.result === "string" ? payload.result : typeof payload.text === "string" ? payload.text : "";
       const result = stripComposerControlTokens(rawResult);
-      if (!text && result) text = result;
-      yield { type: "done", finalText: text };
+      if (!text && result) {
+        for (const emitted of emit(result)) yield emitted;
+      }
+      for (const emitted of toolMarkers.flush()) {
+        if (emitted.type === "text") {
+          text += emitted.text;
+          yield emitted;
+        } else {
+          toolCalls.push(emitted.toolCall);
+          yield emitted;
+        }
+      }
+      yield { type: "done", finalText: text, toolCalls };
       return;
     }
 
@@ -189,16 +226,39 @@ async function* streamLegacyAgentText(response: Response): AsyncGenerator<Cursor
       throw new HttpError(message, 502, "cursor_stream_error");
     }
   }
-  yield { type: "done", finalText: text };
+  for (const emitted of toolMarkers.flush()) {
+    if (emitted.type === "text") {
+      text += emitted.text;
+      yield emitted;
+    } else {
+      toolCalls.push(emitted.toolCall);
+      yield emitted;
+    }
+  }
+  yield { type: "done", finalText: text, toolCalls };
+}
+
+export interface CursorCollectedOutput {
+  text: string;
+  toolCalls: CursorToolCall[];
+}
+
+export async function collectCursorOutput(response: Response): Promise<CursorCollectedOutput> {
+  let text = "";
+  let toolCalls: CursorToolCall[] = [];
+  for await (const event of streamCursorText(response)) {
+    if (event.type === "text" && event.text) text += event.text;
+    if (event.type === "tool_call") toolCalls.push(event.toolCall);
+    if (event.type === "done") {
+      text = event.finalText;
+      toolCalls = event.toolCalls;
+    }
+  }
+  return { text, toolCalls };
 }
 
 export async function collectCursorText(response: Response): Promise<string> {
-  let finalText = "";
-  for await (const event of streamCursorText(response)) {
-    if (event.type === "text" && event.text) finalText += event.text;
-    if (event.type === "done" && event.finalText !== undefined) finalText = event.finalText;
-  }
-  return finalText;
+  return (await collectCursorOutput(response)).text;
 }
 
 async function exchangeCursorApiKey(env: Env, deps: Deps, apiKey: string): Promise<string> {
@@ -539,12 +599,14 @@ function handleEndStreamFrame(payload: Uint8Array) {
 function decodeCursorChatFrame(payload: Uint8Array):
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "tool_call" }
+  | { type: "tool_call"; toolCall?: CursorToolCall }
   | { type: "ignore" }
   | { type: "error"; message: string } {
   try {
     for (const field of decodeProtobufFields(payload)) {
-      if (field.no === 1) return { type: "tool_call" };
+      if (field.no === 1) {
+        return { type: "tool_call", ...(field.value instanceof Uint8Array ? decodeBinaryToolCall(field.value) : {}) };
+      }
       if (field.no !== 2 || field.wt !== 2 || !(field.value instanceof Uint8Array)) continue;
       let text = "";
       let thinking = "";
@@ -584,6 +646,165 @@ function stripComposerControlTokens(value: string): string {
     .slice(marker.index + marker.length)
     .replace(COMPOSER_CONTROL_TOKEN_PATTERN, "")
     .replace(/^\s+/, "");
+}
+
+type ComposerToolMarkerEvent = { type: "text"; text: string } | { type: "tool_call"; toolCall: CursorToolCall };
+
+const TOOL_CALLS_BEGIN = "<|tool_calls_begin|>";
+const TOOL_CALLS_END = "<|tool_calls_end|>";
+const TOOL_CALL_BEGIN = "<|tool_call_begin|>";
+const TOOL_CALL_END = "<|tool_call_end|>";
+const TOOL_SEP = "<|tool_sep|>";
+const TOOL_MARKER_CANDIDATES = [TOOL_CALLS_BEGIN, TOOL_CALLS_END, TOOL_CALL_BEGIN, TOOL_CALL_END, TOOL_SEP].flatMap((marker) => [
+  marker,
+  marker.replaceAll("|", "｜").replaceAll("_", "▁")
+]);
+
+class ComposerToolCallFilter {
+  private buffer = "";
+
+  push(delta: string): ComposerToolMarkerEvent[] {
+    this.buffer += delta;
+    return this.drain(false);
+  }
+
+  flush(): ComposerToolMarkerEvent[] {
+    return this.drain(true);
+  }
+
+  private drain(force: boolean): ComposerToolMarkerEvent[] {
+    const events: ComposerToolMarkerEvent[] = [];
+    for (;;) {
+      const begin = findComposerToolMarker(this.buffer, "tool_calls_begin");
+      if (!begin) {
+        if (!this.buffer.trim()) {
+          if (force) this.buffer = "";
+          break;
+        }
+        const prefixIndex = force ? -1 : toolMarkerPrefixIndex(this.buffer);
+        if (prefixIndex !== -1) {
+          const visible = this.buffer.slice(0, prefixIndex);
+          if (visible.trim()) events.push({ type: "text", text: visible });
+          this.buffer = this.buffer.slice(prefixIndex);
+          break;
+        }
+        const visible = this.buffer;
+        if (visible) events.push({ type: "text", text: visible });
+        this.buffer = "";
+        break;
+      }
+
+      if (begin.index > 0) {
+        const before = this.buffer.slice(0, begin.index);
+        if (before.trim()) events.push({ type: "text", text: before });
+        this.buffer = this.buffer.slice(begin.index);
+        continue;
+      }
+
+      const end = findComposerToolMarker(this.buffer.slice(begin.length), "tool_calls_end");
+      if (!end) {
+        if (force) {
+          events.push({ type: "text", text: this.buffer });
+          this.buffer = "";
+        }
+        break;
+      }
+
+      const blockEnd = begin.length + end.index + end.length;
+      const block = this.buffer.slice(0, blockEnd);
+      for (const toolCall of parseComposerToolCalls(block)) {
+        events.push({ type: "tool_call", toolCall });
+      }
+      this.buffer = this.buffer.slice(blockEnd).replace(/^\s+/, "");
+    }
+    return events;
+  }
+}
+
+function parseComposerToolCalls(value: string): CursorToolCall[] {
+  const normalized = canonicalizeComposerToolMarkers(value);
+  const beginIndex = normalized.indexOf(TOOL_CALLS_BEGIN);
+  const endIndex = normalized.lastIndexOf(TOOL_CALLS_END);
+  if (beginIndex === -1 || endIndex === -1 || endIndex <= beginIndex) return [];
+
+  const body = normalized.slice(beginIndex + TOOL_CALLS_BEGIN.length, endIndex);
+  const calls: CursorToolCall[] = [];
+  let offset = 0;
+  for (;;) {
+    const start = body.indexOf(TOOL_CALL_BEGIN, offset);
+    if (start === -1) break;
+    const contentStart = start + TOOL_CALL_BEGIN.length;
+    const end = body.indexOf(TOOL_CALL_END, contentStart);
+    if (end === -1) break;
+    const call = parseComposerToolCallBody(body.slice(contentStart, end));
+    if (call) calls.push(call);
+    offset = end + TOOL_CALL_END.length;
+  }
+  return calls;
+}
+
+function parseComposerToolCallBody(value: string): CursorToolCall | null {
+  const parts = value.split(TOOL_SEP);
+  const name = (parts.shift() || "").trim();
+  if (!name) return null;
+
+  const args: Record<string, unknown> = {};
+  for (const part of parts) {
+    const trimmed = part.replace(/^\s+/, "");
+    if (!trimmed) continue;
+    const match = /^([^\r\n]+)(?:\r?\n([\s\S]*))?$/.exec(trimmed);
+    if (!match) continue;
+    const key = match[1].trim();
+    if (!key) continue;
+    const rawValue = (match[2] || "").trim();
+    args[key] = parseComposerToolArgument(rawValue);
+  }
+
+  return { name, arguments: args };
+}
+
+function parseComposerToolArgument(value: string): unknown {
+  if (!value) return "";
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === "null") return null;
+  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  if ((value.startsWith("{") && value.endsWith("}")) || (value.startsWith("[") && value.endsWith("]"))) {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function canonicalizeComposerToolMarkers(value: string): string {
+  return value.replace(
+    /<\s*[|｜]\s*(tool[_▁]calls[_▁]begin|tool[_▁]calls[_▁]end|tool[_▁]call[_▁]begin|tool[_▁]call[_▁]end|tool[_▁]sep)\s*[|｜]\s*>/g,
+    (_match, marker: string) => `<|${marker.replaceAll("▁", "_")}|>`
+  );
+}
+
+function findComposerToolMarker(value: string, marker: string): { index: number; length: number } | null {
+  const markerPattern = marker.replaceAll("_", "[_▁]");
+  const pattern = new RegExp(`<\\s*[|｜]\\s*${markerPattern}\\s*[|｜]\\s*>`);
+  const match = pattern.exec(value);
+  return match ? { index: match.index, length: match[0].length } : null;
+}
+
+function toolMarkerPrefixIndex(value: string): number {
+  const max = Math.min(value.length, Math.max(...TOOL_MARKER_CANDIDATES.map((candidate) => candidate.length)));
+  for (let length = max; length >= 1; length -= 1) {
+    const index = value.length - length;
+    const suffix = value.slice(index);
+    if (TOOL_MARKER_CANDIDATES.some((candidate) => candidate.startsWith(suffix))) return index;
+  }
+  return -1;
+}
+
+function decodeBinaryToolCall(_payload: Uint8Array): { toolCall: CursorToolCall } | Record<string, never> {
+  return {};
 }
 
 class ThinkingTextExtractor {

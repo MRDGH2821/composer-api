@@ -191,6 +191,86 @@ describe("Worker", () => {
     expect(exchangeAuthHeaders).toContain("Bearer cursor_direct_key");
   });
 
+  it("streams Composer tool-call markers as OpenAI chat tool calls", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          stream: true,
+          messages: [{ role: "user", content: "List files" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "glob",
+                description: "Find files by glob",
+                parameters: { type: "object", properties: { glob_pattern: { type: "string" } } }
+              }
+            }
+          ]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('"content":"Checking the workspace.\\n"');
+    expect(body).toContain('"tool_calls"');
+    expect(body).toContain('"name":"glob"');
+    expect(body).toContain('"arguments":"{\\"glob_pattern\\":\\"*\\"}"');
+    expect(body).toContain('"finish_reason":"tool_calls"');
+    expect(body).not.toContain("tool_calls_begin");
+  });
+
+  it("buffers Composer tool-call markers as OpenAI chat tool calls", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "List files" }],
+          tools: [{ type: "function", function: { name: "glob" } }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [
+        {
+          message: {
+            content: "Checking the workspace.\n",
+            tool_calls: [{ type: "function", function: { name: "glob", arguments: "{\"glob_pattern\":\"*\"}" } }]
+          },
+          finish_reason: "tool_calls"
+        }
+      ]
+    });
+  });
+
   it("streams SSE response events in direct mode for /v1/responses", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
@@ -424,6 +504,31 @@ function fakeDeps(): { deps: Deps; exchangeAuthHeaders: string[]; chatAuthHeader
             { headers: { "Content-Type": "application/connect+proto" } }
           );
         }
+        if (requestText.includes("List files")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(
+                  connectFrame(
+                    chatResponseText(
+                      [
+                        "Checking the workspace.\n",
+                        "<|tool_calls_begin|><|tool_call_begin|>\n",
+                        "Glob\n",
+                        "<|tool_sep|>glob_pattern\n",
+                        "*\n",
+                        "<|tool_call_end|><|tool_calls_end|>"
+                      ].join("")
+                    )
+                  )
+                );
+                controller.enqueue(connectFrame(new TextEncoder().encode("{}"), 2));
+                controller.close();
+              }
+            }),
+            { headers: { "Content-Type": "application/connect+proto" } }
+          );
+        }
         expect(requestText).toContain("Say hello");
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -463,6 +568,10 @@ function decodeRequestBody(body: BodyInit | null | undefined): string {
 
 function chatResponseThinking(text: string): Uint8Array {
   return protoMessage([protoField(2, protoMessage([protoField(25, protoMessage([protoField(1, text)]))]))]);
+}
+
+function chatResponseText(text: string): Uint8Array {
+  return protoMessage([protoField(2, protoMessage([protoField(1, text)]))]);
 }
 
 function connectFrame(payload: Uint8Array, flags = 0): Uint8Array {

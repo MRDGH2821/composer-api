@@ -112,19 +112,6 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
         }
       }
     }
-  },
-  "agent": {
-    "build": {
-      "tools": {
-        "*": false
-      }
-    },
-    "plan": {
-      "model": "cursor/composer-2.5",
-      "tools": {
-        "*": false
-      }
-    }
   }
 }
 ```
@@ -138,7 +125,7 @@ opencode
 
 If you do not set `model`, run `/models` inside OpenCode and choose `cursor/composer-2.5`.
 
-OpenCode normally sends file-editing tools to coding agents. This proxy does not expose OpenAI tool calling, so the example disables OpenCode tools for the `build` and `plan` agents.
+OpenCode can send its normal coding tools. The proxy translates Composer tool-call markers back into OpenAI-compatible `tool_calls`, so OpenCode remains responsible for executing tools and sending tool results in the next request.
 
 ## cURL
 

@@ -1,6 +1,6 @@
 import { HttpError } from "./http";
 import { encodeSse } from "./sse";
-import type { CursorImage, CursorPrompt } from "./types";
+import type { CursorImage, CursorPrompt, CursorToolCall } from "./types";
 
 export type ApiKind = "chat" | "responses";
 
@@ -11,6 +11,22 @@ export interface PreparedRequest {
   stream: boolean;
   promptChars: number;
   responseMetadata: Record<string, unknown>;
+  tools: OpenAiToolSpec[];
+}
+
+export interface OpenAiToolSpec {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+}
+
+export interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
 
 const SYSTEM_DIRECTIVE = [
@@ -20,26 +36,39 @@ const SYSTEM_DIRECTIVE = [
   "Return only the final answer content."
 ].join("\n");
 
+const TOOL_SYSTEM_DIRECTIVE = [
+  "You are serving an OpenAI-compatible API request through Cursor Composer.",
+  "Answer directly when no tool is needed.",
+  "When a provided tool is needed, call it using Cursor Composer's tool-call marker protocol and do not describe the marker as prose."
+].join("\n");
+
 export function prepareChatRequest(body: unknown, cursorModel: { id: string } | undefined): PreparedRequest {
   const record = expectRecord(body, "body");
   const messages = expectArray(record.messages, "messages");
   validateCommonUnsupported(record);
-  if (record.tools !== undefined && record.tool_choice !== "none") {
-    throw new HttpError("OpenAI tool calls are not supported by this Cursor adapter.", 400, "unsupported_parameter", "tools");
-  }
   if (record.functions !== undefined) {
     throw new HttpError("Legacy function calling is not supported by this adapter.", 400, "unsupported_parameter", "functions");
   }
 
+  const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
-  const transcript: string[] = [SYSTEM_DIRECTIVE, "", "Conversation:"];
+  const transcript: string[] = [tools.length ? TOOL_SYSTEM_DIRECTIVE : SYSTEM_DIRECTIVE];
+  appendChatTools(transcript, tools, record.tool_choice);
+  transcript.push("", "Conversation:");
   const images: CursorImage[] = [];
   for (const message of messages) {
     const item = expectRecord(message, "messages[]");
     const role = typeof item.role === "string" ? item.role : "user";
     const { text, images: messageImages } = contentToTextAndImages(item.content, role);
     images.push(...messageImages);
-    transcript.push(`${role.toUpperCase()}: ${text || "[empty]"}`);
+    if (role === "tool") {
+      const toolCallId = typeof item.tool_call_id === "string" ? item.tool_call_id : "";
+      const toolName = typeof item.name === "string" ? item.name : "";
+      const label = [toolName ? `name=${toolName}` : "", toolCallId ? `tool_call_id=${toolCallId}` : ""].filter(Boolean).join(" ");
+      transcript.push(`TOOL RESULT${label ? ` (${label})` : ""}: ${text || "[empty]"}`);
+    } else {
+      transcript.push(`${role.toUpperCase()}: ${text || "[empty]"}`);
+    }
     if (Array.isArray(item.tool_calls)) {
       transcript.push(`${role.toUpperCase()} TOOL_CALLS: ${JSON.stringify(item.tool_calls)}`);
     }
@@ -55,7 +84,8 @@ export function prepareChatRequest(body: unknown, cursorModel: { id: string } | 
     responseMetadata: {
       temperature: numberOrNull(record.temperature),
       top_p: numberOrNull(record.top_p)
-    }
+    },
+    tools
   };
 }
 
@@ -90,7 +120,8 @@ export function prepareResponsesRequest(body: unknown, cursorModel: { id: string
       temperature: numberOrNull(record.temperature),
       top_p: numberOrNull(record.top_p),
       text: isRecord(record.text) ? record.text : { format: { type: "text" } }
-    }
+    },
+    tools: []
   };
 }
 
@@ -99,9 +130,12 @@ export function chatCompletionResponse(input: {
   created: number;
   model: string;
   text: string;
+  toolCalls?: OpenAiToolCall[];
   promptChars: number;
   metadata?: Record<string, unknown>;
 }): Record<string, unknown> {
+  const toolCalls = input.toolCalls ?? [];
+  const completionChars = input.text.length + serializedToolCallLength(toolCalls);
   return {
     id: input.id,
     object: "chat.completion",
@@ -112,15 +146,16 @@ export function chatCompletionResponse(input: {
         index: 0,
         message: {
           role: "assistant",
-          content: input.text,
+          content: toolCalls.length && !input.text ? null : input.text,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
           refusal: null,
           annotations: []
         },
         logprobs: null,
-        finish_reason: "stop"
+        finish_reason: toolCalls.length ? "tool_calls" : "stop"
       }
     ],
-    usage: usageFromChars(input.promptChars, input.text.length),
+    usage: usageFromChars(input.promptChars, completionChars),
     service_tier: "default",
     system_fingerprint: null,
     ...input.metadata
@@ -132,10 +167,38 @@ export function responseObject(input: {
   created: number;
   model: string;
   text: string;
+  toolCalls?: OpenAiToolCall[];
   promptChars: number;
   metadata?: Record<string, unknown>;
 }): Record<string, unknown> {
   const messageId = `msg_${input.id.slice(5)}`;
+  const output: Record<string, unknown>[] = [];
+  if (input.text || !input.toolCalls?.length) {
+    output.push({
+      id: messageId,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: input.text,
+          annotations: []
+        }
+      ]
+    });
+  }
+  for (const [index, toolCall] of (input.toolCalls ?? []).entries()) {
+    output.push({
+      id: `fc_${input.id.slice(5)}_${index}`,
+      type: "function_call",
+      status: "completed",
+      call_id: toolCall.id,
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments
+    });
+  }
+  const outputChars = input.text.length + serializedToolCallLength(input.toolCalls ?? []);
   return {
     id: input.id,
     object: "response",
@@ -145,21 +208,7 @@ export function responseObject(input: {
     error: null,
     incomplete_details: null,
     model: input.model,
-    output: [
-      {
-        id: messageId,
-        type: "message",
-        status: "completed",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: input.text,
-            annotations: []
-          }
-        ]
-      }
-    ],
+    output,
     parallel_tool_calls: true,
     previous_response_id: null,
     reasoning: { effort: null, summary: null },
@@ -167,7 +216,7 @@ export function responseObject(input: {
     tool_choice: "auto",
     tools: [],
     truncation: "disabled",
-    usage: responseUsageFromChars(input.promptChars, input.text.length),
+    usage: responseUsageFromChars(input.promptChars, outputChars),
     user: null,
     metadata: {},
     ...input.metadata
@@ -180,8 +229,28 @@ export function chatChunk(input: {
   model: string;
   delta?: string;
   role?: "assistant";
+  toolCall?: { index: number; value: OpenAiToolCall };
   finish?: boolean;
+  finishReason?: "stop" | "tool_calls";
 }): Uint8Array {
+  const delta = input.finish
+    ? {}
+    : {
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.delta ? { content: input.delta } : {}),
+        ...(input.toolCall
+          ? {
+              tool_calls: [
+                {
+                  index: input.toolCall.index,
+                  id: input.toolCall.value.id,
+                  type: input.toolCall.value.type,
+                  function: input.toolCall.value.function
+                }
+              ]
+            }
+          : {})
+      };
   const chunk = {
     id: input.id,
     object: "chat.completion.chunk",
@@ -191,9 +260,9 @@ export function chatChunk(input: {
     choices: [
       {
         index: 0,
-        delta: input.finish ? {} : { ...(input.role ? { role: input.role } : {}), ...(input.delta ? { content: input.delta } : {}) },
+        delta,
         logprobs: null,
-        finish_reason: input.finish ? "stop" : null
+        finish_reason: input.finish ? input.finishReason || "stop" : null
       }
     ]
   };
@@ -268,6 +337,7 @@ export function responseDoneEvents(input: {
   created: number;
   model: string;
   text: string;
+  toolCalls?: OpenAiToolCall[];
   promptChars: number;
   metadata?: Record<string, unknown>;
 }): Uint8Array[] {
@@ -318,6 +388,26 @@ export function modelList(): Record<string, unknown> {
   };
 }
 
+export function toOpenAiToolCalls(input: {
+  toolCalls: CursorToolCall[];
+  tools?: OpenAiToolSpec[];
+  responseId: string;
+  startIndex?: number;
+}): OpenAiToolCall[] {
+  return input.toolCalls.map((toolCall, offset) => {
+    const index = (input.startIndex ?? 0) + offset;
+    const name = resolveToolName(toolCall.name, input.tools ?? []);
+    return {
+      id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${index}`,
+      type: "function",
+      function: {
+        name,
+        arguments: JSON.stringify(toolCall.arguments ?? {})
+      }
+    };
+  });
+}
+
 function modelItem(id: string, name: string) {
   return {
     id,
@@ -326,6 +416,44 @@ function modelItem(id: string, name: string) {
     owned_by: "cursor",
     name
   };
+}
+
+function parseChatTools(value: unknown): OpenAiToolSpec[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new HttpError("tools must be an array.", 400, "invalid_request_error", "tools");
+  return value.map((tool, index) => {
+    const record = expectRecord(tool, `tools[${index}]`);
+    if (record.type !== "function") {
+      throw new HttpError("Only function tools are supported.", 400, "unsupported_parameter", `tools[${index}].type`);
+    }
+    const fn = expectRecord(record.function, `tools[${index}].function`);
+    if (typeof fn.name !== "string" || !fn.name.trim()) {
+      throw new HttpError("Tool function name is required.", 400, "invalid_request_error", `tools[${index}].function.name`);
+    }
+    return {
+      name: fn.name.trim(),
+      ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+      ...(fn.parameters !== undefined ? { parameters: fn.parameters } : {})
+    };
+  });
+}
+
+function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoice: unknown) {
+  if (!tools.length) return;
+  transcript.push(
+    "",
+    "TOOLS:",
+    "The client can execute these tools. If a tool is needed, emit a Cursor Composer tool-call block instead of prose."
+  );
+  for (const tool of tools) {
+    transcript.push(`- ${tool.name}${tool.description ? `: ${tool.description}` : ""}`);
+    if (tool.parameters !== undefined) transcript.push(`  parameters: ${JSON.stringify(tool.parameters)}`);
+  }
+  if (isRecord(toolChoice) && toolChoice.type === "function" && isRecord(toolChoice.function) && typeof toolChoice.function.name === "string") {
+    transcript.push(`Use the ${toolChoice.function.name} tool if you call a tool.`);
+  } else if (toolChoice === "required") {
+    transcript.push("You must call at least one tool.");
+  }
 }
 
 function validateCommonUnsupported(record: Record<string, unknown>) {
@@ -480,6 +608,22 @@ function responseUsageFromChars(inputChars: number, outputChars: number) {
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: inputTokens + outputTokens
   };
+}
+
+function serializedToolCallLength(toolCalls: OpenAiToolCall[]): number {
+  return toolCalls.reduce((sum, toolCall) => sum + toolCall.function.name.length + toolCall.function.arguments.length, 0);
+}
+
+function resolveToolName(emittedName: string, tools: OpenAiToolSpec[]): string {
+  const exact = tools.find((tool) => tool.name === emittedName);
+  if (exact) return exact.name;
+  const normalized = normalizeToolName(emittedName);
+  const match = tools.find((tool) => normalizeToolName(tool.name) === normalized);
+  return match?.name ?? emittedName;
+}
+
+function normalizeToolName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function estimateTokens(chars: number): number {
