@@ -90,18 +90,27 @@ print(response.output_text)
 
 ## OpenCode
 
-OpenCode supports custom OpenAI-compatible providers through `@ai-sdk/openai-compatible`, so you can point it at this proxy and use your Cursor API key as the provider key.
+OpenCode should use the SDK-backed Responses bridge, not the hosted stateless `/v1` proxy. The bridge exposes an OpenAI Responses-compatible API on a separate `/sdk/v1` path and uses the Cursor SDK to run a stateful local agent against your project folder.
 
-Use the same hosted proxy base URL as the SDK examples:
+Start the bridge from this repo, pointing it at the project you want OpenCode to edit:
 
-```txt
-{{BASE_URL}}
+```bash
+export CURSOR_API_KEY="crsr_..."
+CURSOR_SDK_PROXY_CWD="/path/to/your/project" npm run sdk:responses
 ```
 
-OpenCode will use these proxy endpoints:
+The bridge base URL is:
 
-- `GET /v1/models`
-- `POST /v1/chat/completions`
+```txt
+http://127.0.0.1:8791/sdk/v1
+```
+
+OpenCode will use these bridge endpoints:
+
+- `GET /sdk/v1/models`
+- `POST /sdk/v1/responses`
+- `GET /sdk/v1/responses/{response_id}`
+- `GET /sdk/v1/health`
 
 Add a custom provider to `~/.config/opencode/opencode.json`:
 
@@ -111,10 +120,10 @@ Add a custom provider to `~/.config/opencode/opencode.json`:
   "model": "cursor/composer-2.5",
   "provider": {
     "cursor": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Cursor via Standard Agents",
+      "npm": "@ai-sdk/openai",
+      "name": "Cursor SDK via Standard Agents",
       "options": {
-        "baseURL": "{{BASE_URL}}",
+        "baseURL": "http://127.0.0.1:8791/sdk/v1",
         "apiKey": "{env:CURSOR_API_KEY}"
       },
       "models": {

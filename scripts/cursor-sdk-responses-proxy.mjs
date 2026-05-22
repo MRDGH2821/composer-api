@@ -58,7 +58,7 @@ const server = http.createServer((request, response) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Cursor SDK Responses proxy listening on http://${host}:${port}/v1`);
+  console.log(`Cursor SDK Responses proxy listening on http://${host}:${port}/sdk/v1`);
   console.log(`Workspace: ${workspaceCwd}`);
 });
 
@@ -67,6 +67,7 @@ process.on("SIGTERM", () => closeAndExit(0));
 
 async function handleRequest(request, response) {
   const url = new URL(request.url || "/", `http://${request.headers.host || `${host}:${port}`}`);
+  const apiPath = normalizeApiPath(url.pathname);
 
   if (request.method === "OPTIONS") {
     writeCors(response, 204);
@@ -74,18 +75,18 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+  if (request.method === "GET" && apiPath === "/health") {
     writeJson(response, { ok: true, cwd: workspaceCwd });
     return;
   }
 
-  if (request.method === "GET" && (url.pathname === "/models" || url.pathname === "/v1/models")) {
+  if (request.method === "GET" && apiPath === "/models") {
     const apiKey = getApiKey(request);
     writeJson(response, await modelList(apiKey));
     return;
   }
 
-  const responseMatch = /^\/v1\/responses\/([^/]+)$/.exec(url.pathname) || /^\/responses\/([^/]+)$/.exec(url.pathname);
+  const responseMatch = /^\/responses\/([^/]+)$/.exec(apiPath);
   if (request.method === "GET" && responseMatch) {
     const record = state.responses?.[responseMatch[1]];
     if (!record?.response) {
@@ -96,12 +97,20 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "POST" && (url.pathname === "/responses" || url.pathname === "/v1/responses")) {
+  if (request.method === "POST" && apiPath === "/responses") {
     await handleCreateResponse(request, response);
     return;
   }
 
   writeJson(response, openAiError(new HttpError("Not found", 404, "not_found")), 404);
+}
+
+function normalizeApiPath(pathname) {
+  if (pathname.startsWith("/sdk/v1/")) return pathname.slice("/sdk/v1".length);
+  if (pathname === "/sdk/v1") return "/";
+  if (pathname.startsWith("/v1/")) return pathname.slice("/v1".length);
+  if (pathname === "/v1") return "/";
+  return pathname;
 }
 
 async function handleCreateResponse(request, response) {
@@ -556,12 +565,12 @@ async function readJsonBody(request) {
 }
 
 function getApiKey(request) {
-  if (process.env.CURSOR_API_KEY) return process.env.CURSOR_API_KEY;
   const authorization = request.headers.authorization || "";
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   const token = match?.[1]?.trim();
-  if (!token || token === "local" || token === "dummy") return "";
-  return token;
+  if (token && token !== "local" && token !== "dummy") return token;
+  if (process.env.CURSOR_API_KEY) return process.env.CURSOR_API_KEY;
+  return "";
 }
 
 function normalizeModel(model) {

@@ -73,23 +73,29 @@ Token usage is estimated from character counts because Cursor's stream does not 
 
 ## OpenCode
 
-OpenCode can use the hosted proxy as a normal selectable provider. Configure a
-provider with `@ai-sdk/openai-compatible`, set the base URL to the proxy, and
-select `cursor/composer-2.5`.
+OpenCode should use the SDK-backed Responses bridge, not the hosted stateless
+`/v1` proxy. Configure provider id `cursor` with `@ai-sdk/openai`, set the base
+URL to the bridge's separate `/sdk/v1` path, and select `cursor/composer-2.5`.
 
 Base URL:
 
 ```txt
-https://cursor-api.standardagents.ai/v1
+http://127.0.0.1:8791/sdk/v1
 ```
 
-OpenCode uses these proxy endpoints:
+OpenCode uses these bridge endpoints:
 
-- `GET /v1/models`
-- `POST /v1/chat/completions`
+- `GET /sdk/v1/models`
+- `POST /sdk/v1/responses`
+- `GET /sdk/v1/responses/{response_id}`
+- `GET /sdk/v1/health`
 
-The local machine config in `~/.config/opencode/opencode.json` uses provider id
-`cursor`, model id `composer-2.5`, and the Cursor credential from OpenCode auth.
+Start the bridge before launching OpenCode:
+
+```bash
+export CURSOR_API_KEY="crsr_..."
+CURSOR_SDK_PROXY_CWD="/path/to/project" npm run sdk:responses
+```
 
 ## Local development
 
