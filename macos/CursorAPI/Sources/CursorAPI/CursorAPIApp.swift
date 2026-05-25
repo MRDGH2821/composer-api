@@ -4,7 +4,7 @@ import SwiftUI
 
 @main
 @MainActor
-final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate {
+final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static var retainedDelegate: CursorAPIAppDelegate?
 
     private let model = CursorAPIAppModel()
@@ -53,6 +53,7 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 760, height: 560)
+        window.delegate = self
         window.contentViewController = NSHostingController(rootView: CursorAPIAppRootView(model: model))
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -60,13 +61,65 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else {
+            return
+        }
+        mainWindow = nil
+    }
+
+    @objc private func closeMainWindow(_ sender: Any?) {
+        mainWindow?.performClose(sender)
+    }
+
+    @objc private func showMainWindow(_ sender: Any?) {
+        revealMainWindow()
+    }
+
+    @objc private func minimizeMainWindow(_ sender: Any?) {
+        mainWindow?.miniaturize(sender)
+    }
+
+    @objc private func zoomMainWindow(_ sender: Any?) {
+        mainWindow?.performZoom(sender)
+    }
+
     private func installMainMenu() {
         let mainMenu = NSMenu()
+
         let appMenuItem = NSMenuItem()
-        let appMenu = NSMenu()
+        let appMenu = NSMenu(title: CursorAPIBrand.displayName)
+        appMenu.addItem(withTitle: "About \(CursorAPIBrand.displayName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(CursorAPIBrand.displayName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+            .keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit \(CursorAPIBrand.displayName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        let fileMenuItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        let closeWindowItem = fileMenu.addItem(withTitle: "Close Window", action: #selector(closeMainWindow(_:)), keyEquivalent: "w")
+        closeWindowItem.target = self
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
+
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        let showWindowItem = windowMenu.addItem(withTitle: "Show \(CursorAPIBrand.displayName)", action: #selector(showMainWindow(_:)), keyEquivalent: "0")
+        showWindowItem.target = self
+        windowMenu.addItem(.separator())
+        let minimizeItem = windowMenu.addItem(withTitle: "Minimize", action: #selector(minimizeMainWindow(_:)), keyEquivalent: "m")
+        minimizeItem.target = self
+        let zoomItem = windowMenu.addItem(withTitle: "Zoom", action: #selector(zoomMainWindow(_:)), keyEquivalent: "")
+        zoomItem.target = self
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+
         NSApp.mainMenu = mainMenu
     }
 }
