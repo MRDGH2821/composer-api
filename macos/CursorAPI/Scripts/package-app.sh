@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="$ROOT_DIR/.build/release"
+APP_DIR="$ROOT_DIR/dist/CursorAPI.app"
+CONTENTS_DIR="$APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+ICONSET_DIR="$RESOURCES_DIR/CursorAPI.iconset"
+
+swift build --package-path "$ROOT_DIR" -c release
+rm -rf "$APP_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/CursorAPI"
+if [ -d "$BUILD_DIR/CursorAPI_CursorAPI.bundle" ]; then
+  cp -R "$BUILD_DIR/CursorAPI_CursorAPI.bundle" "$RESOURCES_DIR/"
+fi
+mkdir -p "$ICONSET_DIR"
+swift - "$ICONSET_DIR" <<'SWIFT'
+import AppKit
+import CoreGraphics
+import Foundation
+
+let outputDirectory = URL(fileURLWithPath: CommandLine.arguments[1])
+
+func writeIcon(points: Int, scale: Int, name: String) throws {
+    let pixels = points * scale
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+        data: nil,
+        width: pixels,
+        height: pixels,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        throw NSError(domain: "CursorAPIIcon", code: 1)
+    }
+
+    let size = CGFloat(pixels)
+    let bounds = CGRect(x: 0, y: 0, width: size, height: size)
+    context.clear(bounds)
+    context.setShouldAntialias(true)
+    context.interpolationQuality = .high
+
+    let tileRect = bounds.insetBy(dx: size * 0.085, dy: size * 0.085)
+    let radius = size * 0.205
+    let tilePath = CGPath(roundedRect: tileRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+
+    context.saveGState()
+    context.setShadow(
+        offset: CGSize(width: 0, height: -size * 0.022),
+        blur: size * 0.06,
+        color: CGColor(gray: 0, alpha: 0.30)
+    )
+    context.setFillColor(CGColor(red: 0.02, green: 0.02, blue: 0.018, alpha: 1))
+    context.addPath(tilePath)
+    context.fillPath()
+    context.restoreGState()
+
+    context.saveGState()
+    context.addPath(tilePath)
+    context.clip()
+
+    let baseGradient = CGGradient(
+        colorsSpace: colorSpace,
+        colors: [
+            CGColor(red: 0.18, green: 0.18, blue: 0.17, alpha: 1.0),
+            CGColor(red: 0.055, green: 0.055, blue: 0.052, alpha: 1.0),
+            CGColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
+        ] as CFArray,
+        locations: [0.0, 0.52, 1.0]
+    )!
+    context.drawLinearGradient(
+        baseGradient,
+        start: CGPoint(x: tileRect.minX, y: tileRect.maxY),
+        end: CGPoint(x: tileRect.maxX, y: tileRect.minY),
+        options: []
+    )
+
+    let accentGradient = CGGradient(
+        colorsSpace: colorSpace,
+        colors: [
+            CGColor(red: 0.2, green: 0.56, blue: 1.0, alpha: 0.32),
+            CGColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
+        ] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    context.drawRadialGradient(
+        accentGradient,
+        startCenter: CGPoint(x: tileRect.minX + tileRect.width * 0.25, y: tileRect.maxY - tileRect.height * 0.18),
+        startRadius: 0,
+        endCenter: CGPoint(x: tileRect.minX + tileRect.width * 0.25, y: tileRect.maxY - tileRect.height * 0.18),
+        endRadius: tileRect.width * 0.82,
+        options: []
+    )
+
+    context.addPath(CGPath(roundedRect: tileRect.insetBy(dx: size * 0.012, dy: size * 0.012), cornerWidth: radius * 0.92, cornerHeight: radius * 0.92, transform: nil))
+    context.setStrokeColor(CGColor(gray: 1.0, alpha: 0.16))
+    context.setLineWidth(max(1, size * 0.008))
+    context.strokePath()
+    context.restoreGState()
+
+    let markSize = tileRect.width * 0.56
+    let center = CGPoint(x: tileRect.midX, y: tileRect.midY + tileRect.height * 0.015)
+    let top = CGPoint(x: center.x, y: center.y + markSize * 0.40)
+    let right = CGPoint(x: center.x + markSize * 0.42, y: center.y + markSize * 0.17)
+    let rightBottom = CGPoint(x: center.x + markSize * 0.42, y: center.y - markSize * 0.30)
+    let bottom = CGPoint(x: center.x, y: center.y - markSize * 0.55)
+    let leftBottom = CGPoint(x: center.x - markSize * 0.42, y: center.y - markSize * 0.30)
+    let left = CGPoint(x: center.x - markSize * 0.42, y: center.y + markSize * 0.17)
+    let core = CGPoint(x: center.x, y: center.y - markSize * 0.04)
+
+    func fillPolygon(_ points: [CGPoint], color: CGColor) {
+        guard let first = points.first else { return }
+        context.beginPath()
+        context.move(to: first)
+        for point in points.dropFirst() {
+            context.addLine(to: point)
+        }
+        context.closePath()
+        context.setFillColor(color)
+        context.fillPath()
+    }
+
+    context.saveGState()
+    context.setShadow(
+        offset: CGSize(width: 0, height: -size * 0.010),
+        blur: size * 0.020,
+        color: CGColor(gray: 0, alpha: 0.38)
+    )
+    fillPolygon([top, right, core, left], color: CGColor(red: 1.0, green: 1.0, blue: 0.98, alpha: 1.0))
+    fillPolygon([left, core, bottom, leftBottom], color: CGColor(red: 0.78, green: 0.79, blue: 0.78, alpha: 1.0))
+    fillPolygon([right, rightBottom, bottom, core], color: CGColor(red: 0.92, green: 0.93, blue: 0.91, alpha: 1.0))
+    context.restoreGState()
+
+    context.beginPath()
+    context.move(to: top)
+    for point in [right, rightBottom, bottom, leftBottom, left] {
+        context.addLine(to: point)
+    }
+    context.closePath()
+    context.move(to: left)
+    context.addLine(to: core)
+    context.addLine(to: right)
+    context.move(to: core)
+    context.addLine(to: bottom)
+    context.setStrokeColor(CGColor(gray: 0.02, alpha: 0.28))
+    context.setLineWidth(max(1, size * 0.010))
+    context.setLineJoin(.round)
+    context.strokePath()
+
+    guard let image = context.makeImage() else {
+        throw NSError(domain: "CursorAPIIcon", code: 2)
+    }
+    let representation = NSBitmapImageRep(cgImage: image)
+    guard let data = representation.representation(using: .png, properties: [:]) else {
+        throw NSError(domain: "CursorAPIIcon", code: 3)
+    }
+    try data.write(to: outputDirectory.appendingPathComponent(name))
+}
+
+let specs = [
+    (16, 1, "icon_16x16.png"),
+    (16, 2, "icon_16x16@2x.png"),
+    (32, 1, "icon_32x32.png"),
+    (32, 2, "icon_32x32@2x.png"),
+    (128, 1, "icon_128x128.png"),
+    (128, 2, "icon_128x128@2x.png"),
+    (256, 1, "icon_256x256.png"),
+    (256, 2, "icon_256x256@2x.png"),
+    (512, 1, "icon_512x512.png"),
+    (512, 2, "icon_512x512@2x.png")
+]
+
+for spec in specs {
+    try writeIcon(points: spec.0, scale: spec.1, name: spec.2)
+}
+SWIFT
+iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/CursorAPI.icns"
+rm -rf "$ICONSET_DIR"
+cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>CursorAPI</string>
+  <key>CFBundleIdentifier</key>
+  <string>ai.standardagents.cursorapi</string>
+  <key>CFBundleName</key>
+  <string>CursorAPI</string>
+  <key>CFBundleDisplayName</key>
+  <string>CursorAPI</string>
+  <key>CFBundleIconFile</key>
+  <string>CursorAPI</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+codesign --force --deep --sign - "$APP_DIR" >/dev/null
+rm -f "$ROOT_DIR/dist/CursorAPI.zip"
+ditto -c -k --keepParent "$APP_DIR" "$ROOT_DIR/dist/CursorAPI.zip"
+echo "$APP_DIR"

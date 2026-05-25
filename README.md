@@ -147,6 +147,36 @@ Select `cursor/composer-2.5`, displayed as **Composer 2.5**.
 
 </details>
 
+## Native macOS app
+
+The repository also includes an experimental native app at
+`macos/CursorAPI`. It runs a local OpenAI-compatible API on macOS without the
+Cloudflare Worker or hosted bridge:
+
+```txt
+http://127.0.0.1:8787/v1
+```
+
+The app keeps private Cursor SDK transport settings local to the machine. It can
+install Composer 2.5 and Composer 2.5 Fast provider entries for OpenCode, Codex,
+VS Code, pi, Cline, and Kilo.
+
+Its `/v1/responses` endpoint is stateful in-process: `previous_response_id`
+continues the same SDK agent session, while per-project headers or Responses
+metadata keep concurrent projects on separate SDK sessions.
+
+The local listener stays stopped until a Cursor API key is entered in the app UI.
+The key is stored in the macOS Keychain; generated agent configs use
+`cursor-local` placeholders instead of writing the real key to disk.
+
+Build it with:
+
+```bash
+swift test --package-path macos/CursorAPI
+macos/CursorAPI/Scripts/package-app.sh
+open macos/CursorAPI/dist/CursorAPI.app
+```
+
 ## Local development
 
 ```bash
