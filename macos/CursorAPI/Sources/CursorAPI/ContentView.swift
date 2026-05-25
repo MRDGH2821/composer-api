@@ -589,10 +589,6 @@ struct SettingsPage: View {
                 SettingsFieldRow(title: "Cursor API Key", subtitle: "Stored locally in Keychain") {
                     APIKeySettingsControl(model: model)
                 }
-                SettingsFieldRow(title: "Key Exchange", subtitle: "Bundled routing origin") {
-                    TextField("Configured by packaged app", text: $model.settings.cursorAPIBaseURL)
-                        .textFieldStyle(.roundedBorder)
-                }
             }
 
             SettingsGroup(title: "Local Server", icon: "server.rack") {
@@ -691,6 +687,10 @@ struct AdvancedTransportGroup: View {
                     .padding(.top, 6)
 
                 VStack(spacing: 0) {
+                    SettingsFieldRow(title: "Key Exchange Origin", subtitle: "Required for custom routing") {
+                        TextField("Configured by packaged app", text: $model.settings.cursorAPIBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
                     SettingsFieldRow(title: "Backend Origin", subtitle: "Required for custom routing") {
                         TextField("https://...", text: $model.settings.backendBaseURL)
                             .textFieldStyle(.roundedBorder)
