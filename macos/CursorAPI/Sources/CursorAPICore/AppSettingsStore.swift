@@ -18,22 +18,32 @@ public enum AppSettingsStoreError: Error, LocalizedError, Equatable {
 
 public final class AppSettingsStore: @unchecked Sendable {
     private let defaults: UserDefaults
+    private let environment: [String: String]
+    private let bundledTransportDefaults: @Sendable () -> [String: String]
     private let key = "CursorAPI.settings.v1"
     private let queue = DispatchQueue(label: "CursorAPI.AppSettingsStore")
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundledTransportDefaults: @escaping @Sendable () -> [String: String] = AppSettingsStore.loadBundledTransportDefaults
+    ) {
         self.defaults = defaults
+        self.environment = environment
+        self.bundledTransportDefaults = bundledTransportDefaults
     }
 
     public func load() -> CursorAPISettings {
         queue.sync {
             if let data = defaults.data(forKey: key),
                var value = try? JSONDecoder().decode(CursorAPISettings.self, from: data) {
+                applyTransportDefaults(to: &value, from: bundledTransportDefaults(), onlyWhenMissing: true)
                 applyEnvironmentDefaults(to: &value, onlyWhenMissing: true)
                 value.keychainCursorAPIKeyAvailable = value.hasInlineCursorAPIKey || keychainAPIKeyExists()
                 return value
             }
             var value = CursorAPISettings()
+            applyTransportDefaults(to: &value, from: bundledTransportDefaults(), onlyWhenMissing: true)
             applyEnvironmentDefaults(to: &value, onlyWhenMissing: false)
             value.keychainCursorAPIKeyAvailable = value.hasInlineCursorAPIKey || keychainAPIKeyExists()
             return value
@@ -72,7 +82,7 @@ public final class AppSettingsStore: @unchecked Sendable {
     }
 
     private func applyEnvironmentDefaults(to value: inout CursorAPISettings, onlyWhenMissing: Bool) {
-        let env = ProcessInfo.processInfo.environment
+        let env = environment
         if (!onlyWhenMissing || value.port == 8787), let envPort = env["CURSOR_API_PORT"], let port = UInt16(envPort) {
             value.port = port
         }
@@ -91,6 +101,41 @@ public final class AppSettingsStore: @unchecked Sendable {
         if !onlyWhenMissing || value.clientVersion.isEmpty || value.clientVersion == "sdk-1.0.13" {
             value.clientVersion = env["CURSOR_SDK_CLIENT_VERSION"] ?? value.clientVersion
         }
+    }
+
+    private func applyTransportDefaults(to value: inout CursorAPISettings, from defaults: [String: String], onlyWhenMissing: Bool) {
+        if !onlyWhenMissing || value.cursorAPIBaseURL.isEmpty || value.cursorAPIBaseURL == "https://api.cursor.com" {
+            value.cursorAPIBaseURL = firstValue(defaults, keys: ["cursorAPIBaseURL", "CURSOR_API_BASE"]) ?? value.cursorAPIBaseURL
+        }
+        if !onlyWhenMissing || value.backendBaseURL.isEmpty {
+            value.backendBaseURL = firstValue(defaults, keys: ["backendBaseURL", "CURSOR_BACKEND_BASE_URL"]) ?? value.backendBaseURL
+        }
+        if !onlyWhenMissing || value.localAgentEndpoint.isEmpty {
+            value.localAgentEndpoint = firstValue(defaults, keys: ["localAgentEndpoint", "CURSOR_LOCAL_AGENT_ENDPOINT"]) ?? value.localAgentEndpoint
+        }
+        if !onlyWhenMissing || value.clientVersion.isEmpty || value.clientVersion == "sdk-1.0.13" {
+            value.clientVersion = firstValue(defaults, keys: ["clientVersion", "CURSOR_SDK_CLIENT_VERSION"]) ?? value.clientVersion
+        }
+    }
+
+    private func firstValue(_ defaults: [String: String], keys: [String]) -> String? {
+        for key in keys {
+            if let value = defaults[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    public static func loadBundledTransportDefaults() -> [String: String] {
+        guard let url = Bundle.main.url(forResource: "CursorAPITransportDefaults", withExtension: "plist"),
+              let dictionary = NSDictionary(contentsOf: url) as? [String: Any] else {
+            return [:]
+        }
+        return dictionary.compactMapValues { value in
+            (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.value.isEmpty }
     }
 
     private func keychainAPIKeyExists() -> Bool {

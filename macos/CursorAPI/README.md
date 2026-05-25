@@ -57,6 +57,21 @@ Private Cursor backend origins and SDK endpoint paths are intentionally not chec
 - `CURSOR_SDK_CLIENT_VERSION`
 - `CURSOR_API_PORT`
 
+When packaging a distributable local app, the package script can embed SDK
+transport defaults from the packager's environment into the generated `.app`
+bundle. This keeps private transport values out of source control while allowing
+the app to work when launched by double-clicking:
+
+```sh
+CURSOR_BACKEND_BASE_URL="..." \
+CURSOR_LOCAL_AGENT_ENDPOINT="..." \
+CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13" \
+macos/CursorAPI/Scripts/package-app.sh
+```
+
+If those two transport values are missing at package time, the app still builds
+but shows a setup-needed notice until Settings > Advanced Transport is filled in.
+
 Build and run:
 
 ```sh

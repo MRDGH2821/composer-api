@@ -16,6 +16,39 @@ cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/CursorAPI"
 if [ -d "$BUILD_DIR/CursorAPI_CursorAPI.bundle" ]; then
   cp -R "$BUILD_DIR/CursorAPI_CursorAPI.bundle" "$RESOURCES_DIR/"
 fi
+swift - "$RESOURCES_DIR" <<'SWIFT'
+import Foundation
+
+let resourcesDirectory = URL(fileURLWithPath: CommandLine.arguments[1])
+let environment = ProcessInfo.processInfo.environment
+var defaults: [String: String] = [:]
+
+let mappings = [
+    ("CURSOR_API_BASE", "cursorAPIBaseURL"),
+    ("CURSOR_BACKEND_BASE_URL", "backendBaseURL"),
+    ("CURSOR_LOCAL_AGENT_ENDPOINT", "localAgentEndpoint"),
+    ("CURSOR_SDK_CLIENT_VERSION", "clientVersion")
+]
+
+for (environmentKey, plistKey) in mappings {
+    guard let value = environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty else {
+        continue
+    }
+    defaults[plistKey] = value
+}
+
+let hasCompleteTransport = defaults["backendBaseURL"] != nil && defaults["localAgentEndpoint"] != nil
+if hasCompleteTransport {
+    let outputURL = resourcesDirectory.appendingPathComponent("CursorAPITransportDefaults.plist")
+    guard NSDictionary(dictionary: defaults).write(to: outputURL, atomically: true) else {
+        throw NSError(domain: "CursorAPITransportDefaults", code: 1)
+    }
+    print("Embedded bundled SDK transport defaults.")
+} else {
+    print("No bundled SDK transport defaults found; configure transport in Settings.")
+}
+SWIFT
 mkdir -p "$ICONSET_DIR"
 swift - "$ICONSET_DIR" <<'SWIFT'
 import AppKit

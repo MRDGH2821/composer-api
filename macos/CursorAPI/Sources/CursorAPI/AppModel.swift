@@ -48,7 +48,10 @@ final class CursorAPIAppModel: ObservableObject {
         if !hasCursorAPIKey {
             return "Needs API Key"
         }
-        return "Key Saved"
+        if !sdkConfigured {
+            return "Setup Needed"
+        }
+        return "Ready"
     }
 
     func startServer(allowKeychainPrompt: Bool = true) {
@@ -151,11 +154,13 @@ final class CursorAPIAppModel: ObservableObject {
 
     private func updateStatusText() {
         if isRunning {
-            statusText = "Listening on \(baseURL)"
+            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); SDK transport setup needed"
         } else if needsKeychainPermission {
             statusText = "Click Start to allow CursorAPI to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
             statusText = "Enter a Cursor API key to start the local API"
+        } else if !sdkConfigured {
+            statusText = "Configure SDK transport to use Composer"
         } else {
             statusText = "Ready to start local API"
         }

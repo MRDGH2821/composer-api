@@ -177,6 +177,11 @@ macos/CursorAPI/Scripts/package-app.sh
 open macos/CursorAPI/dist/CursorAPI.app
 ```
 
+For a double-clickable build with SDK transport preconfigured, run the package
+script with `CURSOR_BACKEND_BASE_URL` and `CURSOR_LOCAL_AGENT_ENDPOINT` in the
+local environment. The generated `.app` gets a bundled defaults plist, while the
+private values stay out of git.
+
 ## Local development
 
 ```bash

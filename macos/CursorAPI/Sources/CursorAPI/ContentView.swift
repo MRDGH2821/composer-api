@@ -58,7 +58,7 @@ struct ContentView: View {
             Spacer()
 
             HStack(spacing: 8) {
-                StatusPill(tone: model.hasCursorAPIKey ? .ok : .warning, text: model.sdkStatusText)
+                StatusPill(tone: model.sdkConfigured ? .ok : .warning, text: model.sdkStatusText)
                 StatusPill(tone: model.isRunning ? .ok : .muted, text: model.isRunning ? "Running" : "Stopped")
                 HeaderPageTabs(selection: $topPage)
             }
@@ -380,6 +380,31 @@ struct KeychainPermissionPanel: View {
     }
 }
 
+struct TransportSetupPanel: View {
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "network")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SDK transport setup needed")
+                    .font(.callout.weight(.semibold))
+                Text("Package the app with bundled transport defaults or open Settings > Advanced Transport to configure local SDK routing.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 struct ConnectionPage: View {
     @ObservedObject var model: CursorAPIAppModel
 
@@ -389,6 +414,8 @@ struct ConnectionPage: View {
                 APIKeyRequiredPanel(model: model)
             } else if model.needsKeychainPermission {
                 KeychainPermissionPanel(model: model)
+            } else if !model.sdkConfigured {
+                TransportSetupPanel()
             }
 
             HStack(spacing: 12) {
@@ -432,9 +459,9 @@ struct SettingsPage: View {
                 )
                 SettingsSummaryTile(
                     icon: model.isRunning ? "checkmark.circle.fill" : "power.circle",
-                    title: model.isRunning ? "API Running" : (model.hasCursorAPIKey ? "Ready to Start" : "Waiting for Key"),
-                    detail: model.isRunning ? model.baseURL : "Local endpoint",
-                    tone: model.isRunning ? .ok : (model.hasCursorAPIKey ? .muted : .warning)
+                    title: model.isRunning ? "API Running" : (model.sdkConfigured ? "Ready to Start" : "Setup Needed"),
+                    detail: model.isRunning ? model.baseURL : (model.sdkConfigured ? "Local endpoint" : "SDK transport"),
+                    tone: model.isRunning && model.sdkConfigured ? .ok : (model.sdkConfigured ? .muted : .warning)
                 )
                 SettingsSummaryTile(
                     icon: model.settings.launchAtLogin ? "power.circle.fill" : "power.circle",
