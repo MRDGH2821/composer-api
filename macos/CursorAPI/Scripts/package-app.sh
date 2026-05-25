@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.build/release"
 APP_NAME="API for Cursor"
+EXECUTABLE_NAME="$APP_NAME"
 APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
 LEGACY_APP_DIR="$ROOT_DIR/dist/CursorAPI.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -45,7 +46,7 @@ export CURSOR_API_REQUIRE_BUNDLED_TRANSPORT="$REQUIRE_BUNDLED_TRANSPORT"
 swift build --package-path "$ROOT_DIR" -c release
 rm -rf "$APP_DIR" "$LEGACY_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/CursorAPI"
+cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/$EXECUTABLE_NAME"
 if [ -d "$BUILD_DIR/CursorAPI_CursorAPI.bundle" ]; then
   cp -R "$BUILD_DIR/CursorAPI_CursorAPI.bundle" "$RESOURCES_DIR/"
 fi
@@ -313,7 +314,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>CursorAPI</string>
+  <string>API for Cursor</string>
   <key>CFBundleIdentifier</key>
   <string>ai.standardagents.cursorapi</string>
   <key>CFBundleName</key>
