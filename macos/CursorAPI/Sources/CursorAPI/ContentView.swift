@@ -580,8 +580,8 @@ struct SettingsPage: View {
                 SettingsFieldRow(title: "Cursor API Key", subtitle: "Stored locally in Keychain") {
                     APIKeySettingsControl(model: model)
                 }
-                SettingsFieldRow(title: "Cursor API", subtitle: "Public key exchange origin") {
-                    TextField("https://api.cursor.com", text: $model.settings.cursorAPIBaseURL)
+                SettingsFieldRow(title: "Key Exchange", subtitle: "Bundled bridge origin") {
+                    TextField("Configured by packaged app", text: $model.settings.cursorAPIBaseURL)
                         .textFieldStyle(.roundedBorder)
                 }
             }

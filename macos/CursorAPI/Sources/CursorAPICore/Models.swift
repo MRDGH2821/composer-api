@@ -1,6 +1,8 @@
 import Foundation
 
 public struct CursorAPISettings: Codable, Equatable, Sendable {
+    public static let legacyCursorAPIBaseURL = "https://api.cursor.com"
+
     public var port: UInt16
     public var cursorAPIKey: String
     public var keychainCursorAPIKeyAvailable: Bool
@@ -14,7 +16,7 @@ public struct CursorAPISettings: Codable, Equatable, Sendable {
         port: UInt16 = 8787,
         cursorAPIKey: String = "",
         keychainCursorAPIKeyAvailable: Bool = false,
-        cursorAPIBaseURL: String = "https://api.cursor.com",
+        cursorAPIBaseURL: String = "",
         backendBaseURL: String = "",
         localAgentEndpoint: String = "",
         clientVersion: String = "sdk-1.0.13",
@@ -43,8 +45,14 @@ public struct CursorAPISettings: Codable, Equatable, Sendable {
     }
 
     public var hasCursorSDKConfiguration: Bool {
-        !backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasCursorAPIExchangeConfiguration
+            && !backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !localAgentEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public var hasCursorAPIExchangeConfiguration: Bool {
+        let value = cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty && value != Self.legacyCursorAPIBaseURL
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -62,7 +70,7 @@ public struct CursorAPISettings: Codable, Equatable, Sendable {
         port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8787
         cursorAPIKey = try container.decodeIfPresent(String.self, forKey: .cursorAPIKey) ?? ""
         keychainCursorAPIKeyAvailable = false
-        cursorAPIBaseURL = try container.decodeIfPresent(String.self, forKey: .cursorAPIBaseURL) ?? "https://api.cursor.com"
+        cursorAPIBaseURL = try container.decodeIfPresent(String.self, forKey: .cursorAPIBaseURL) ?? ""
         backendBaseURL = try container.decodeIfPresent(String.self, forKey: .backendBaseURL) ?? ""
         localAgentEndpoint = try container.decodeIfPresent(String.self, forKey: .localAgentEndpoint) ?? ""
         clientVersion = try container.decodeIfPresent(String.self, forKey: .clientVersion) ?? "sdk-1.0.13"

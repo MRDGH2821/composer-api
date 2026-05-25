@@ -89,8 +89,8 @@ public final class AppSettingsStore: @unchecked Sendable {
         if !onlyWhenMissing || value.cursorAPIKey.isEmpty {
             value.cursorAPIKey = env["CURSOR_API_KEY"] ?? value.cursorAPIKey
         }
-        if !onlyWhenMissing || value.cursorAPIBaseURL.isEmpty || value.cursorAPIBaseURL == "https://api.cursor.com" {
-            value.cursorAPIBaseURL = env["CURSOR_API_BASE"] ?? value.cursorAPIBaseURL
+        if !onlyWhenMissing || isMissingCursorAPIBaseURL(value.cursorAPIBaseURL) {
+            value.cursorAPIBaseURL = env["CURSOR_API_BASE"] ?? normalizedCursorAPIBaseURL(value.cursorAPIBaseURL)
         }
         if !onlyWhenMissing || value.backendBaseURL.isEmpty {
             value.backendBaseURL = env["CURSOR_BACKEND_BASE_URL"] ?? value.backendBaseURL
@@ -104,8 +104,8 @@ public final class AppSettingsStore: @unchecked Sendable {
     }
 
     private func applyTransportDefaults(to value: inout CursorAPISettings, from defaults: [String: String], onlyWhenMissing: Bool) {
-        if !onlyWhenMissing || value.cursorAPIBaseURL.isEmpty || value.cursorAPIBaseURL == "https://api.cursor.com" {
-            value.cursorAPIBaseURL = firstValue(defaults, keys: ["cursorAPIBaseURL", "CURSOR_API_BASE"]) ?? value.cursorAPIBaseURL
+        if !onlyWhenMissing || isMissingCursorAPIBaseURL(value.cursorAPIBaseURL) {
+            value.cursorAPIBaseURL = firstValue(defaults, keys: ["cursorAPIBaseURL", "CURSOR_API_BASE"]) ?? normalizedCursorAPIBaseURL(value.cursorAPIBaseURL)
         }
         if !onlyWhenMissing || value.backendBaseURL.isEmpty {
             value.backendBaseURL = firstValue(defaults, keys: ["backendBaseURL", "CURSOR_BACKEND_BASE_URL"]) ?? value.backendBaseURL
@@ -125,6 +125,15 @@ public final class AppSettingsStore: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    private func isMissingCursorAPIBaseURL(_ value: String) -> Bool {
+        normalizedCursorAPIBaseURL(value).isEmpty
+    }
+
+    private func normalizedCursorAPIBaseURL(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == CursorAPISettings.legacyCursorAPIBaseURL ? "" : trimmed
     }
 
     public static func loadBundledTransportDefaults() -> [String: String] {

@@ -67,12 +67,13 @@ their Cursor API key:
 
 ```sh
 CURSOR_BACKEND_BASE_URL="..." \
+CURSOR_API_BASE="..." \
 CURSOR_LOCAL_AGENT_ENDPOINT="..." \
 CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13" \
 macos/CursorAPI/Scripts/package-app.sh
 ```
 
-If those two transport values are missing at package time, the app still builds
+If any required bridge value is missing at package time, the app still builds
 but shows a bridge-missing notice until Settings > Advanced Bridge Overrides is filled in. Set `CURSOR_API_REQUIRE_BUNDLED_TRANSPORT=1` when making release builds to fail packaging instead.
 
 Build and run:

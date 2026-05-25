@@ -6,7 +6,7 @@ final class SettingsTests: XCTestCase {
         let data = Data("""
         {
           "port": 9999,
-          "cursorAPIBaseURL": "https://api.cursor.com",
+          "cursorAPIBaseURL": "",
           "backendBaseURL": "",
           "localAgentEndpoint": "",
           "clientVersion": "sdk-1.0.13",
@@ -31,12 +31,36 @@ final class SettingsTests: XCTestCase {
     func testBridgeConfigurationDoesNotRequireAPIKey() {
         let settings = CursorAPISettings(
             cursorAPIKey: "",
+            cursorAPIBaseURL: "https://exchange.example",
             backendBaseURL: "https://bridge.example",
             localAgentEndpoint: "/sdk/run"
         )
 
         XCTAssertFalse(settings.hasCursorAPIKey)
         XCTAssertTrue(settings.hasCursorSDKConfiguration)
+    }
+
+    func testBridgeConfigurationRequiresKeyExchangeOrigin() {
+        let settings = CursorAPISettings(
+            cursorAPIKey: "",
+            backendBaseURL: "https://bridge.example",
+            localAgentEndpoint: "/sdk/run"
+        )
+
+        XCTAssertFalse(settings.hasCursorAPIExchangeConfiguration)
+        XCTAssertFalse(settings.hasCursorSDKConfiguration)
+    }
+
+    func testLegacyCursorAPIBaseURLDoesNotCountAsBridgeConfiguration() {
+        let settings = CursorAPISettings(
+            cursorAPIKey: "",
+            cursorAPIBaseURL: CursorAPISettings.legacyCursorAPIBaseURL,
+            backendBaseURL: "https://bridge.example",
+            localAgentEndpoint: "/sdk/run"
+        )
+
+        XCTAssertFalse(settings.hasCursorAPIExchangeConfiguration)
+        XCTAssertFalse(settings.hasCursorSDKConfiguration)
     }
 
     func testSettingsEncodingDoesNotPersistKeychainAvailabilityMarker() throws {
@@ -56,6 +80,7 @@ final class SettingsTests: XCTestCase {
             environment: [:],
             bundledTransportDefaults: {
                 [
+                    "cursorAPIBaseURL": "https://exchange.example",
                     "backendBaseURL": "https://bundled.example",
                     "localAgentEndpoint": "/sdk/run",
                     "clientVersion": "sdk-test"
@@ -65,6 +90,7 @@ final class SettingsTests: XCTestCase {
 
         let settings = store.load()
 
+        XCTAssertEqual(settings.cursorAPIBaseURL, "https://exchange.example")
         XCTAssertEqual(settings.backendBaseURL, "https://bundled.example")
         XCTAssertEqual(settings.localAgentEndpoint, "/sdk/run")
         XCTAssertEqual(settings.clientVersion, "sdk-test")
@@ -76,12 +102,14 @@ final class SettingsTests: XCTestCase {
         let store = AppSettingsStore(
             defaults: defaults,
             environment: [
+                "CURSOR_API_BASE": "https://exchange-env.example",
                 "CURSOR_BACKEND_BASE_URL": "https://env.example",
                 "CURSOR_LOCAL_AGENT_ENDPOINT": "/env/run",
                 "CURSOR_SDK_CLIENT_VERSION": "sdk-env"
             ],
             bundledTransportDefaults: {
                 [
+                    "cursorAPIBaseURL": "https://exchange-bundled.example",
                     "backendBaseURL": "https://bundled.example",
                     "localAgentEndpoint": "/sdk/run",
                     "clientVersion": "sdk-test"
@@ -91,6 +119,7 @@ final class SettingsTests: XCTestCase {
 
         let settings = store.load()
 
+        XCTAssertEqual(settings.cursorAPIBaseURL, "https://exchange-env.example")
         XCTAssertEqual(settings.backendBaseURL, "https://env.example")
         XCTAssertEqual(settings.localAgentEndpoint, "/env/run")
         XCTAssertEqual(settings.clientVersion, "sdk-env")
@@ -101,7 +130,7 @@ final class SettingsTests: XCTestCase {
         let saved = CursorAPISettings(
             port: 8787,
             cursorAPIKey: "",
-            cursorAPIBaseURL: "https://api.cursor.com",
+            cursorAPIBaseURL: "https://exchange-saved.example",
             backendBaseURL: "https://saved.example",
             localAgentEndpoint: "/saved/run",
             clientVersion: "sdk-saved",
@@ -114,6 +143,7 @@ final class SettingsTests: XCTestCase {
             environment: [:],
             bundledTransportDefaults: {
                 [
+                    "cursorAPIBaseURL": "https://exchange-bundled.example",
                     "backendBaseURL": "https://bundled.example",
                     "localAgentEndpoint": "/sdk/run",
                     "clientVersion": "sdk-test"
@@ -123,6 +153,7 @@ final class SettingsTests: XCTestCase {
 
         let settings = store.load()
 
+        XCTAssertEqual(settings.cursorAPIBaseURL, "https://exchange-saved.example")
         XCTAssertEqual(settings.backendBaseURL, "https://saved.example")
         XCTAssertEqual(settings.localAgentEndpoint, "/saved/run")
         XCTAssertEqual(settings.clientVersion, "sdk-saved")

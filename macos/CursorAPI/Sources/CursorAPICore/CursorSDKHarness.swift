@@ -90,8 +90,11 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
     }
 
     private func exchangeCursorAPIKey(_ apiKey: String, settings: CursorAPISettings) async throws -> String {
+        guard settings.hasCursorAPIExchangeConfiguration else {
+            throw CursorAPIError.invalidConfiguration("This CursorAPI build is missing its bundled Composer key-exchange origin. Repackage the app with complete bridge defaults or inspect Settings > Advanced Bridge Overrides.")
+        }
         guard let base = URL(string: settings.cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw CursorAPIError.invalidConfiguration("Cursor public API origin is not a valid URL.")
+            throw CursorAPIError.invalidConfiguration("Cursor key-exchange origin is not a valid URL.")
         }
         let url = base.appending(path: "/auth/exchange_user_api_key")
         var request = URLRequest(url: url)
