@@ -6,7 +6,7 @@ Live deployment: https://cursor-api.standardagents.ai
 
 ## What this is
 
-Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. This Worker adapts OpenAI-style requests into the format Cursor accepts:
+Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. API for Cursor adapts OpenAI-style requests into the format Cursor accepts:
 
 - `POST /auth/exchange_user_api_key`
 - a private Cursor chat endpoint configured with `CURSOR_CHAT_ENDPOINT`

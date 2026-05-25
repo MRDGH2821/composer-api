@@ -101,8 +101,8 @@
           </div>
           <header class="docs-head">
             <span class="kicker"><i data-lucide="terminal"></i> Setup</span>
-            <h2 id="docs-title">How to use it</h2>
-            <p>Cursor does not expose a standard inference API. This proxy accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.</p>
+            <h2 id="docs-title">How to use API for Cursor</h2>
+            <p>Cursor does not expose a standard inference API. API for Cursor accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.</p>
             <p>Use the OpenAI SDK, Vercel AI SDK, or any client that can set a custom base URL. Authenticate every request with your Cursor API key as a Bearer token.</p>
           </header>
 
@@ -131,7 +131,7 @@
 
             <article class="faq-item">
               <h3>How does it work?</h3>
-              <p>The proxy accepts familiar OpenAI-style requests, then sends them on to Cursor in a format it can handle. Streaming requests stream back as server-sent events; non-streaming requests are buffered and returned as normal JSON.</p>
+              <p>API for Cursor accepts familiar OpenAI-style requests, then sends them on to Cursor in a format it can handle. Streaming requests stream back as server-sent events; non-streaming requests are buffered and returned as normal JSON.</p>
             </article>
 
             <article class="faq-item">
@@ -142,7 +142,7 @@
 
             <article class="faq-item">
               <h3>Do you store my Cursor API key?</h3>
-              <p>No. Your app sends the key as a Bearer token on each request, and the proxy forwards it to Cursor for that request.</p>
+              <p>No. Your client sends the key as a Bearer token on each request, and API for Cursor forwards it to Cursor for that request.</p>
             </article>
 
             <article class="faq-item">

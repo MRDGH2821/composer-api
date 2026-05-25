@@ -1,6 +1,6 @@
-# How to use it
+# How to use API for Cursor
 
-Cursor does not expose a standard inference API. This proxy accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.
+Cursor does not expose a standard inference API. API for Cursor accepts familiar OpenAI-style requests and transforms the formats into something Cursor can use.
 
 Use the OpenAI SDK, Vercel AI SDK, or any client that can set a custom base URL. Authenticate every request with your Cursor API key as a Bearer token.
 
@@ -240,4 +240,4 @@ Available endpoints:
 
 ## Try it in Cursor Chat
 
-Open [Cursor Chat](/chat) to try an example app that uses the missing API to create a ChatGPT-style experience with Cursor models. It sends the same `/v1/chat/completions` requests shown above and displays the request JSON beside the conversation.
+Open [Cursor Chat](/chat) to try a browser demo that uses the missing API to create a ChatGPT-style experience with Cursor models. It sends the same `/v1/chat/completions` requests shown above and displays the request JSON beside the conversation.
