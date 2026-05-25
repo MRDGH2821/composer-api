@@ -270,6 +270,42 @@ final class AgentProvisionerTests: XCTestCase {
         }
     }
 
+    func testStatusesRequireCompleteCodexAndVSCodeProviderShapes() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+        let codexConfig = home.appending(path: ".codex/config.toml")
+        let vscodeConfig = home.appending(path: "Library/Application Support/Code/User/chatLanguageModels.json")
+
+        try FileManager.default.createDirectory(at: codexConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        [model_providers.cursorapi]
+        name = "\(CursorAPIBrand.displayName)"
+        base_url = "\(settings.baseURL.absoluteString)"
+        """.write(to: codexConfig, atomically: true, encoding: .utf8)
+
+        try FileManager.default.createDirectory(at: vscodeConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        [
+          {
+            "name": "\(CursorAPIBrand.displayName)",
+            "provider": "openai-compatible",
+            "baseUrl": "\(settings.baseURL.absoluteString)",
+            "models": ["composer-2.5"]
+          }
+        ]
+        """.write(to: vscodeConfig, atomically: true, encoding: .utf8)
+
+        for id in [AgentIntegrationID.codex, .vscode] {
+            let status = provisioner.status(for: id, settings: settings)
+            XCTAssertFalse(status.installed, "\(id.displayName) should require complete provider metadata")
+            XCTAssertTrue(status.detail.contains("update"), "\(id.displayName) should explain stale metadata")
+
+            try provisioner.install(id, settings: settings)
+            XCTAssertTrue(provisioner.status(for: id, settings: settings).installed)
+        }
+    }
+
     private func temporaryHome() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appending(path: "CursorAPITests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

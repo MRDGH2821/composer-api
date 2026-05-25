@@ -84,8 +84,8 @@ public final class AgentProvisioner: @unchecked Sendable {
             return AgentIntegrationStatus(id: .codex, installed: false, configPath: url.path, detail: "Codex config not found")
         }
         let text = fileText(url)
-        let installed = text.contains(settings.baseURL.absoluteString)
-        let detail = installed ? "Custom provider installed" : text.contains("[model_providers.cursorapi]") ? "Provider found with a different local URL" : "Ready to install"
+        let installed = codexConfigMatches(text, settings: settings)
+        let detail = installed ? "Custom provider installed" : providerStatusDetail(text: text, settings: settings)
         return AgentIntegrationStatus(id: .codex, installed: installed, configPath: url.path, detail: detail)
     }
 
@@ -132,8 +132,8 @@ public final class AgentProvisioner: @unchecked Sendable {
             return AgentIntegrationStatus(id: .vscode, installed: false, configPath: url.path, detail: "VS Code chatLanguageModels.json not found")
         }
         let text = fileText(url)
-        let installed = text.contains(settings.baseURL.absoluteString)
-        let detail = installed ? "Model metadata installed" : (text.contains("CursorAPI") || text.contains(CursorAPIBrand.displayName)) ? "Model metadata found with a different local URL" : "Ready to install"
+        let installed = vscodeConfigMatches(settings: settings)
+        let detail = installed ? "Model metadata installed" : providerStatusDetail(text: text, settings: settings)
         return AgentIntegrationStatus(id: .vscode, installed: installed, configPath: url.path, detail: detail)
     }
 
@@ -181,6 +181,39 @@ public final class AgentProvisioner: @unchecked Sendable {
         let installed = piConfigMatches(settings: settings)
         let detail = installed ? "Custom models installed" : providerStatusDetail(text: fileText(url), settings: settings)
         return AgentIntegrationStatus(id: .pi, installed: installed, configPath: url.path, detail: detail)
+    }
+
+    private func codexConfigMatches(_ text: String, settings: CursorAPISettings) -> Bool {
+        text.contains("[model_providers.cursorapi]")
+            && text.contains("name = \"\(CursorAPIBrand.displayName)\"")
+            && text.contains("base_url = \"\(settings.baseURL.absoluteString)\"")
+            && text.contains("wire_api = \"responses\"")
+            && text.contains("[model_providers.cursorapi.auth]")
+            && text.contains("command = \"/bin/echo\"")
+            && text.contains("args = [\"cursor-local\"]")
+            && text.contains("[profiles.cursorapi]")
+            && text.contains("model_provider = \"cursorapi\"")
+            && text.contains("model = \"composer-2.5\"")
+            && text.contains("[profiles.cursorapi-fast]")
+            && text.contains("model = \"composer-2.5-fast\"")
+    }
+
+    private func vscodeConfigMatches(settings: CursorAPISettings) -> Bool {
+        let url = vscodeLanguageModelsURL()
+        guard fileManager.fileExists(atPath: url.path),
+              let array = try? readJSONArray(url, defaultValue: []) else {
+            return false
+        }
+        return array.contains { item in
+            guard let record = item as? [String: Any],
+                  stringValue(record["name"]) == CursorAPIBrand.displayName,
+                  stringValue(record["provider"]) == "openai-compatible",
+                  stringValue(record["baseUrl"]) == settings.baseURL.absoluteString,
+                  let models = record["models"] as? [String] else {
+                return false
+            }
+            return Set(models).isSuperset(of: Set(ComposerModels.all.map(\.id)))
+        }
     }
 
     private func opencodeConfigMatches(settings: CursorAPISettings) -> Bool {
