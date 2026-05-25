@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.build/release"
 APP_NAME="API for Cursor"
 EXECUTABLE_NAME="$APP_NAME"
+APP_VERSION="${CURSOR_API_APP_VERSION:-0.1.0}"
+APP_BUILD="${CURSOR_API_APP_BUILD:-1}"
+APP_COPYRIGHT="${CURSOR_API_COPYRIGHT:-Copyright 2026 Standard Agents}"
 APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
 LEGACY_APP_DIR="$ROOT_DIR/dist/CursorAPI.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -308,33 +311,55 @@ for spec in specs {
 SWIFT
 iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/APIForCursor.icns"
 rm -rf "$ICONSET_DIR"
-cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
+xml_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+APP_NAME_XML="$(xml_escape "$APP_NAME")"
+EXECUTABLE_NAME_XML="$(xml_escape "$EXECUTABLE_NAME")"
+APP_VERSION_XML="$(xml_escape "$APP_VERSION")"
+APP_BUILD_XML="$(xml_escape "$APP_BUILD")"
+APP_COPYRIGHT_XML="$(xml_escape "$APP_COPYRIGHT")"
+APP_INFO_XML="$(xml_escape "$APP_NAME $APP_VERSION")"
+cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>API for Cursor</string>
+  <string>$EXECUTABLE_NAME_XML</string>
   <key>CFBundleIdentifier</key>
   <string>ai.standardagents.cursorapi</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
   <key>CFBundleName</key>
-  <string>API for Cursor</string>
+  <string>$APP_NAME_XML</string>
   <key>CFBundleDisplayName</key>
-  <string>API for Cursor</string>
+  <string>$APP_NAME_XML</string>
+  <key>CFBundleGetInfoString</key>
+  <string>$APP_INFO_XML</string>
   <key>CFBundleIconFile</key>
   <string>APIForCursor</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$APP_VERSION_XML</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$APP_BUILD_XML</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>$APP_COPYRIGHT_XML</string>
 </dict>
 </plist>
 PLIST
