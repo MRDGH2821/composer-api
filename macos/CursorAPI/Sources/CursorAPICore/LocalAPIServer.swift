@@ -112,6 +112,22 @@ public final class LocalAPIServer: @unchecked Sendable {
                 }
                 return try .response(withCORS(HTTPResponse.json(OpenAICompatibility.modelObject(model))))
             }
+            if request.method == "POST", path == "/v1/completions" {
+                var prepared = try OpenAICompatibility.prepareCompletionRequest(request.body)
+                prepared.sessionKey = sessionAffinity(request)
+                let settings = settingsProvider()
+                let id = "cmpl_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+                let created = Int(Date().timeIntervalSince1970)
+                if prepared.stream {
+                    return .stream(HTTPStreamResponse(
+                        status: 200,
+                        headers: streamingHeaders(),
+                        chunks: completionChunks(id: id, created: created, prepared: prepared, settings: settings, authorization: request.header("authorization"))
+                    ))
+                }
+                let output = try await harness.complete(prepared: prepared, settings: settings, authorization: request.header("authorization"))
+                return try .response(withCORS(HTTPResponse.json(OpenAICompatibility.completionResponse(id: id, created: created, prepared: prepared, output: output))))
+            }
             if request.method == "POST", path == "/v1/chat/completions" {
                 var prepared = try OpenAICompatibility.prepareChatRequest(request.body)
                 prepared.sessionKey = sessionAffinity(request)
@@ -172,6 +188,48 @@ public final class LocalAPIServer: @unchecked Sendable {
             throw CursorAPIError.notFound
         } catch {
             return .response(errorResponse(error))
+        }
+    }
+
+    private func completionChunks(
+        id: String,
+        created: Int,
+        prepared: PreparedChatRequest,
+        settings: CursorAPISettings,
+        authorization: String?
+    ) -> AsyncThrowingStream<Data, any Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    var emittedText = ""
+                    var finalOutput: CursorSDKOutput?
+
+                    for try await event in harness.stream(prepared: prepared, settings: settings, authorization: authorization) {
+                        switch event {
+                        case .text(let delta):
+                            emittedText += delta
+                            continuation.yield(OpenAICompatibility.completionStreamText(id: id, created: created, model: prepared.model, text: delta))
+                        case .toolCall:
+                            continue
+                        case .done(let output):
+                            finalOutput = output
+                        }
+                    }
+
+                    let output = resolvedOutput(finalOutput: finalOutput, emittedText: emittedText, emittedToolCalls: [])
+                    if output.text.count > emittedText.count, output.text.hasPrefix(emittedText) {
+                        let suffix = String(output.text.dropFirst(emittedText.count))
+                        continuation.yield(OpenAICompatibility.completionStreamText(id: id, created: created, model: prepared.model, text: suffix))
+                    } else if emittedText.isEmpty, !output.text.isEmpty {
+                        continuation.yield(OpenAICompatibility.completionStreamText(id: id, created: created, model: prepared.model, text: output.text))
+                    }
+                    continuation.yield(OpenAICompatibility.completionStreamFinish(id: id, created: created, model: prepared.model))
+                    continuation.yield(OpenAICompatibility.completionStreamDone())
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
     }
 
@@ -448,6 +506,9 @@ public final class LocalAPIServer: @unchecked Sendable {
         }
         if value == "/models" || value.hasPrefix("/models/") {
             return "/v1\(value)"
+        }
+        if value == "/completions" {
+            return "/v1/completions"
         }
         if value == "/chat/completions" {
             return "/v1/chat/completions"

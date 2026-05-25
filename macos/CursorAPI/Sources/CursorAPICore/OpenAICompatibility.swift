@@ -103,6 +103,38 @@ public enum OpenAICompatibility {
         )
     }
 
+    public static func prepareCompletionRequest(_ body: Data) throws -> PreparedChatRequest {
+        let raw = try jsonObject(body)
+        guard let prompt = raw["prompt"] else {
+            throw CursorAPIError.badRequest("prompt is required.")
+        }
+        let requestedModel = (raw["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = requestedModel?.isEmpty == false ? requestedModel! : "composer-2.5"
+        var transcript = [
+            "You are running through a local Cursor SDK-compatible harness.",
+            "Respond to the following legacy completions prompt as plain assistant text.",
+            "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately.",
+            "",
+            "PROMPT:",
+            completionPromptText(prompt)
+        ]
+        appendOptions(&transcript, raw)
+        let joined = transcript.joined(separator: "\n")
+        return PreparedChatRequest(
+            model: model,
+            cursorModelID: ComposerModels.cursorModelID(for: model),
+            prompt: joined,
+            stream: raw["stream"] as? Bool == true,
+            promptCharacters: joined.count,
+            tools: [],
+            sessionKey: nil,
+            requestedSessionKey: nil,
+            previousResponseID: nil,
+            storeResponse: false,
+            responseInputItems: []
+        )
+    }
+
     public static func prepareResponsesRequest(_ body: Data) throws -> PreparedChatRequest {
         let raw = try jsonObject(body)
         let requestedModel = (raw["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -195,6 +227,56 @@ public enum OpenAICompatibility {
             "cursor_agent_id": output.agentID,
             "cursor_run_id": output.runID
         ]
+    }
+
+    public static func completionResponse(
+        id: String,
+        created: Int,
+        prepared: PreparedChatRequest,
+        output: CursorSDKOutput
+    ) -> [String: Any] {
+        [
+            "id": id,
+            "object": "text_completion",
+            "created": created,
+            "model": prepared.model,
+            "choices": [
+                [
+                    "text": output.text,
+                    "index": 0,
+                    "logprobs": NSNull(),
+                    "finish_reason": "stop"
+                ]
+            ],
+            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count),
+            "cursor_agent_id": output.agentID,
+            "cursor_run_id": output.runID
+        ]
+    }
+
+    public static func completionStreamText(id: String, created: Int, model: String, text: String) -> Data {
+        guard !text.isEmpty else { return Data() }
+        return sse([
+            "id": id,
+            "object": "text_completion",
+            "created": created,
+            "model": model,
+            "choices": [["text": text, "index": 0, "logprobs": NSNull(), "finish_reason": NSNull()]]
+        ])
+    }
+
+    public static func completionStreamFinish(id: String, created: Int, model: String) -> Data {
+        sse([
+            "id": id,
+            "object": "text_completion",
+            "created": created,
+            "model": model,
+            "choices": [["text": "", "index": 0, "logprobs": NSNull(), "finish_reason": "stop"]]
+        ])
+    }
+
+    public static func completionStreamDone() -> Data {
+        Data("data: [DONE]\n\n".utf8)
     }
 
     public static func chatCompletionStream(
@@ -540,6 +622,22 @@ public enum OpenAICompatibility {
             return role == "assistant" ? "" : "[empty]"
         }
         return String(describing: value!)
+    }
+
+    private static func completionPromptText(_ value: Any) -> String {
+        if let value = value as? String {
+            return value
+        }
+        if let prompts = value as? [String] {
+            return prompts.joined(separator: "\n\n")
+        }
+        if let prompts = value as? [Any] {
+            return prompts.map { completionPromptText($0) }.joined(separator: "\n\n")
+        }
+        if value is NSNull {
+            return "[empty]"
+        }
+        return String(describing: value)
     }
 
     private static func responseInputText(_ value: Any?) -> String {

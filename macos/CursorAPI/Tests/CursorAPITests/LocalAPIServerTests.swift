@@ -112,6 +112,72 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(allowedHeaders.contains("OpenAI-Beta"))
     }
 
+    func testCompletionsEndpoint() async throws {
+        let port = UInt16(Int.random(in: 49_001...59_000))
+        let recorder = PreparedRequestRecorder()
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness(recorder: recorder))
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/completions")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"composer-2.5","prompt":"hello"}"#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+
+        XCTAssertEqual(object["object"] as? String, "text_completion")
+        XCTAssertEqual(choices.first?["text"] as? String, "ok")
+        let prompts = await recorder.prompts()
+        XCTAssertTrue(prompts.first?.contains("PROMPT:\nhello") == true)
+    }
+
+    func testCompletionsEndpointAcceptsOriginBaseURL() async throws {
+        let port = UInt16(Int.random(in: 49_001...59_000))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/completions")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"composer-2.5","prompt":"hello"}"#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("text_completion"))
+        XCTAssertTrue(text.contains("ok"))
+    }
+
+    func testCompletionsStreamingEndpoint() async throws {
+        let port = UInt16(Int.random(in: 49_001...59_000))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness(events: [
+            .text("hel"),
+            .text("lo"),
+            .done(CursorSDKOutput(text: "hello", agentID: "agent-test", runID: "run-test"))
+        ]))
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/completions")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"composer-2.5","prompt":"hello","stream":true}"#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains(#""object":"text_completion""#))
+        XCTAssertTrue(text.contains(#""text":"hel""#))
+        XCTAssertTrue(text.contains(#""text":"lo""#))
+        XCTAssertTrue(text.contains("data: [DONE]"))
+    }
+
     func testChatCompletionsEndpoint() async throws {
         let port = UInt16(Int.random(in: 49_001...59_000))
         let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
@@ -723,6 +789,10 @@ private actor PreparedRequestRecorder {
 
     func sessionKeys() -> [String] {
         requests.map { $0.sessionKey ?? "" }
+    }
+
+    func prompts() -> [String] {
+        requests.map(\.prompt)
     }
 }
 
