@@ -216,6 +216,28 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertTrue(provisioner.status(for: .vscode, settings: settings).installed)
     }
 
+    func testAllGeneratedAgentConfigsAreLocalOnlyAndIncludeBothComposerModels() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+
+        for id in AgentIntegrationID.allCases {
+            try provisioner.install(id, settings: settings)
+            XCTAssertTrue(provisioner.status(for: id, settings: settings).installed, "\(id.displayName) should be installed")
+        }
+
+        let generatedText = try allGeneratedConfigText(under: home)
+        XCTAssertTrue(generatedText.contains("http://127.0.0.1:8787/v1"))
+        XCTAssertTrue(generatedText.contains("composer-2.5"))
+        XCTAssertTrue(generatedText.contains("composer-2.5-fast"))
+        XCTAssertTrue(generatedText.contains("cursor-local"))
+        XCTAssertFalse(generatedText.contains("cursor-api.standardagents.ai"))
+        XCTAssertFalse(generatedText.contains("/opencode"))
+        XCTAssertFalse(generatedText.contains("/opencodev2"))
+        XCTAssertFalse(generatedText.contains("CURSOR_API_KEY"))
+        XCTAssertFalse(generatedText.contains("crsr_"))
+    }
+
     func testStatusesRequireCurrentLocalBaseURL() throws {
         let home = try temporaryHome()
         let provisioner = AgentProvisioner(homeDirectory: home)
@@ -319,6 +341,15 @@ final class AgentProvisionerTests: XCTestCase {
     private func readJSONObject(_ url: URL) throws -> [String: Any] {
         let data = try Data(contentsOf: url)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func allGeneratedConfigText(under home: URL) throws -> String {
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: home, includingPropertiesForKeys: nil))
+        var chunks: [String] = []
+        for case let url as URL in enumerator where !url.hasDirectoryPath {
+            chunks.append(try String(contentsOf: url, encoding: .utf8))
+        }
+        return chunks.joined(separator: "\n")
     }
 
     private func replaceText(in url: URL, matching oldValue: String, with newValue: String) throws {
