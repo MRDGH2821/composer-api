@@ -1,4 +1,4 @@
-# Composer API
+# API for Cursor
 
 OpenAI-compatible `chat.completions` and `responses` endpoints backed by Cursor Composer.
 
