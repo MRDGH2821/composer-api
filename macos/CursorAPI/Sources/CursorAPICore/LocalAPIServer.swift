@@ -562,8 +562,8 @@ public final class LocalAPIServer: @unchecked Sendable {
         let prefix = "/v1/models/"
         guard path.hasPrefix(prefix) else { return nil }
         let value = String(path.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, !value.contains("/") else { return nil }
-        return value
+        guard !value.isEmpty else { return nil }
+        return value.removingPercentEncoding ?? value
     }
 
     private func responseInputItemsID(from path: String) -> String? {

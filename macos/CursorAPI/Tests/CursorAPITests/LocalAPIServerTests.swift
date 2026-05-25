@@ -165,6 +165,26 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["id"] as? String, "composer-2.5-fast")
     }
 
+    func testModelRetrieveEndpointAcceptsProviderPrefixedAliases() async throws {
+        let port = UInt16(Int.random(in: 39_000...49_000))
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let paths = [
+            "/v1/models/cursorapi%2Fcomposer-2.5-fast-sdk",
+            "/v1/models/cursorapi/composer-2.5-fast-sdk"
+        ]
+
+        for path in paths {
+            let (data, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, path)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(object["id"] as? String, "composer-2.5-fast", path)
+        }
+    }
+
     func testUnknownModelRetrieveEndpointReturns404() async throws {
         let port = UInt16(Int.random(in: 39_000...49_000))
         let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
