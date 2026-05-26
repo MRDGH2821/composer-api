@@ -24,6 +24,46 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertTrue(provisioner.status(for: .opencode, settings: settings).installed)
     }
 
+    func testInstallOpenCodeRemovesLegacyHostedProviders() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+        let config = home.appending(path: ".config/opencode/opencode.json")
+        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        {
+          "model": "cursor/composer-2.5",
+          "provider": {
+            "cursor": {
+              "name": "Cursor API via Standard Agents",
+              "options": {
+                "baseURL": "https://cursor-api.standardagents.ai/opencode/v1"
+              }
+            },
+            "cursorsdk": {
+              "name": "Cursor SDK Bridge",
+              "options": {
+                "baseURL": "https://cursor-api.standardagents.ai/opencodev2/v1"
+              }
+            },
+            "openrouter": {
+              "name": "OpenRouter"
+            }
+          }
+        }
+        """.write(to: config, atomically: true, encoding: .utf8)
+
+        try provisioner.install(.opencode, settings: settings)
+
+        let root = try readJSONObject(config)
+        let providers = try XCTUnwrap(root["provider"] as? [String: Any])
+        XCTAssertNil(providers["cursor"])
+        XCTAssertNil(providers["cursorsdk"])
+        XCTAssertNotNil(providers["openrouter"])
+        XCTAssertNotNil(providers["cursorapi"])
+        XCTAssertEqual(root["model"] as? String, "cursorapi/composer-2.5-fast")
+    }
+
     func testOpenCodeAndKiloRespectXDGConfigHome() throws {
         let home = try temporaryHome()
         let xdgConfig = home.appending(path: "Library/Config")

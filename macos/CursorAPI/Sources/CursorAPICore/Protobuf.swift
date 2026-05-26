@@ -172,11 +172,11 @@ public enum CursorSDKProto {
 
     public static func requestContextResult(id: Int, execID: String?) -> Data {
         let env = Proto.message([
-            Proto.stringField(1, "\(CursorAPIBrand.displayName) macOS"),
+            Proto.stringField(1, "SDK OpenCode bridge"),
             Proto.stringField(2, "."),
             Proto.stringField(3, "sh"),
             Proto.boolField(5, false),
-            Proto.stringField(10, TimeZone.current.identifier),
+            Proto.stringField(10, "UTC"),
             Proto.stringField(11, "."),
             Proto.stringField(21, ".")
         ])

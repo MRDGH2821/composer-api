@@ -159,17 +159,14 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
             state.parser.push(data)
         }
         for payload in parsed {
-            state.lock.withLock {
-                state.frameHandler
-            }?(payload)
-            let shouldSendContext = state.lock.withLock { () -> CursorSDKRequestContext? in
-                guard !state.requestContextSent, let context = CursorSDKRequestContext.decode(payload) else {
-                    return nil
+            let action = state.lock.withLock { () -> CursorSDKFrameAction in
+                let action = CursorSDKFrameRouter.action(for: payload, requestContextAlreadySent: state.requestContextSent)
+                if action.requestContext != nil {
+                    state.requestContextSent = true
                 }
-                state.requestContextSent = true
-                return context
+                return action
             }
-            if let context = shouldSendContext {
+            if let context = action.requestContext {
                 let frame = ConnectProto.frame(CursorSDKProto.requestContextResult(id: context.id, execID: context.execID))
                 do {
                     try state.write(frame)
@@ -177,8 +174,14 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
                 } catch {
                     finish(taskIdentifier: dataTask.taskIdentifier, result: .failure(error))
                 }
+                continue
             }
-            if CursorSDKStreamMarkers.hasTurnEnded(payload) {
+            if action.shouldForwardToDecoder {
+                state.lock.withLock {
+                    state.frameHandler
+                }?(payload)
+            }
+            if action.hasToolCall || action.isTurnEnded {
                 let data = state.lock.withLock { state.responseData }
                 finish(taskIdentifier: dataTask.taskIdentifier, result: .success(data), cancelTask: true)
                 return
@@ -257,6 +260,32 @@ public final class CursorSDKHTTP2Transport: NSObject, URLSessionDataDelegate, UR
     }
 }
 
+struct CursorSDKFrameAction: Equatable {
+    var requestContext: CursorSDKRequestContext?
+    var shouldForwardToDecoder: Bool
+    var isTurnEnded: Bool
+    var hasToolCall: Bool
+}
+
+enum CursorSDKFrameRouter {
+    static func action(for payload: Data, requestContextAlreadySent: Bool) -> CursorSDKFrameAction {
+        if !requestContextAlreadySent, let context = CursorSDKRequestContext.decode(payload) {
+            return CursorSDKFrameAction(
+                requestContext: context,
+                shouldForwardToDecoder: false,
+                isTurnEnded: false,
+                hasToolCall: false
+            )
+        }
+        return CursorSDKFrameAction(
+            requestContext: nil,
+            shouldForwardToDecoder: true,
+            isTurnEnded: CursorSDKStreamMarkers.hasTurnEnded(payload),
+            hasToolCall: CursorSDKStreamMarkers.hasToolCall(payload)
+        )
+    }
+}
+
 struct CursorSDKRequestContext: Equatable {
     var id: Int
     var execID: String?
@@ -285,6 +314,37 @@ struct CursorSDKStreamMarkers {
                 nested.number == 14
             }) {
                 return true
+            }
+        }
+        return false
+    }
+
+    static func hasToolCall(_ payload: Data) -> Bool {
+        for field in Proto.decodeFields(payload) {
+            if field.number == 1, case .bytes(let interactionUpdate) = field.value {
+                let fields = Proto.decodeFields(interactionUpdate)
+                if fields.contains(where: { nested in
+                    guard [2, 3, 7].contains(nested.number), case .bytes = nested.value else {
+                        return false
+                    }
+                    return true
+                }) {
+                    return true
+                }
+            }
+            if field.number == 2, case .bytes(let execServerMessage) = field.value {
+                let fields = Proto.decodeFields(execServerMessage)
+                if fields.contains(where: { $0.number == 10 }) {
+                    continue
+                }
+                if fields.contains(where: { nested in
+                    guard [2, 3, 4, 5, 7, 8, 9, 11, 14].contains(nested.number), case .bytes = nested.value else {
+                        return false
+                    }
+                    return true
+                }) {
+                    return true
+                }
             }
         }
         return false

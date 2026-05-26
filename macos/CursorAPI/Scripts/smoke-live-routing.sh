@@ -16,7 +16,7 @@ Usage: CURSOR_API_TEST_KEY=crsr_... $0 [--app PATH] [--timeout SECONDS] [--skip-
 Launch the packaged macOS app and verify the live Composer routing path using
 an environment-provided Cursor API key. This checks direct chat completions,
 streaming chat completions, Responses API output, SDK bridge process reuse, and
-an OpenCode interactive round trip when opencode and tmux are installed.
+an OpenCode interactive tool round trip when opencode and tmux are installed.
 
   --app PATH        App bundle to launch. Defaults to dist/API for Cursor.app.
   --timeout N       Seconds to wait for app and live requests. Default: 45.
@@ -93,6 +93,10 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+osascript -e 'tell application id "ai.standardagents.cursorapi" to quit' >/dev/null 2>&1 || true
+pkill -f 'cursor-sdk-opencode-bridge.mjs' >/dev/null 2>&1 || true
+sleep 0.5
 
 smoke_output="$(mktemp "${TMPDIR:-/tmp}/api-for-cursor-live-app.XXXXXX")"
 TEMP_FILES+=("$smoke_output")
@@ -354,18 +358,23 @@ JSON
   grep -F "cursorapi/composer-2.5-fast" <<<"$models_output" >/dev/null || fail "OpenCode did not list composer-2.5-fast"
 
   session="api-for-cursor-live-opencode-$$"
-  tmux new-session -d -x 160 -y 48 -s "$session" "cd \"$temp_project\" && HOME=\"$temp_home\" XDG_CONFIG_HOME=\"$temp_config\" opencode --pure --model cursorapi/composer-2.5-fast"
+  marker="AFC_TOOL_DONE_$$"
+  tool_file="opencode_live_tool_smoke.txt"
+  tmux new-session -d -x 180 -y 56 -s "$session" "cd \"$temp_project\" && HOME=\"$temp_home\" XDG_CONFIG_HOME=\"$temp_config\" opencode --pure run --interactive --dangerously-skip-permissions --model cursorapi/composer-2.5-fast"
   sleep 4
-  tmux send-keys -t "$session" "Reply exactly: pongtest" Enter
+  tmux send-keys -t "$session" "Use the bash tool to run exactly: printf TOOL_OK > $tool_file. After the tool succeeds, reply exactly: $marker" Enter
 
   deadline=$((SECONDS + TIMEOUT_SECONDS))
   last_capture=""
   while [ "$SECONDS" -lt "$deadline" ]; do
     last_capture="$(tmux capture-pane -t "$session" -p -J -S -200 2>/dev/null || true)"
-    pong_count="$( (printf "%s\n" "$last_capture" | grep -F "pongtest" || true) | wc -l | tr -d " " )"
-    if [ "${pong_count:-0}" -ge 2 ] && printf "%s\n" "$last_capture" | grep -F "API for Cursor" >/dev/null; then
+    marker_count="$( (printf "%s\n" "$last_capture" | grep -F "$marker" || true) | wc -l | tr -d " " )"
+    if [ -f "$temp_project/$tool_file" ] \
+      && [ "$(cat "$temp_project/$tool_file")" = "TOOL_OK" ] \
+      && [ "${marker_count:-0}" -ge 2 ] \
+      && printf "%s\n" "$last_capture" | grep -F "API for Cursor" >/dev/null; then
       tmux kill-session -t "$session" >/dev/null 2>&1 || true
-      echo "Verified live OpenCode interactive response through API for Cursor."
+      echo "Verified live OpenCode interactive tool execution through API for Cursor."
       bridge_count="$(bridge_process_count)"
       [ "$bridge_count" = "1" ] || fail "expected one shared SDK bridge process after OpenCode, found $bridge_count"
       exit 0
@@ -375,5 +384,5 @@ JSON
 
   printf "%s\n" "$last_capture" | tail -80
   tmux kill-session -t "$session" >/dev/null 2>&1 || true
-  fail "OpenCode did not surface the live Composer response before timeout"
+  fail "OpenCode did not execute the live tool round trip before timeout"
 fi

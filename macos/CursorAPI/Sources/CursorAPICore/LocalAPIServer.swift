@@ -409,6 +409,7 @@ public final class LocalAPIServer: @unchecked Sendable {
             Task {
                 do {
                     continuation.yield(OpenAICompatibility.chatCompletionStreamStart(id: id, created: created, model: prepared.model))
+                    let bufferTextUntilToolDecision = !prepared.tools.isEmpty
                     var emittedText = ""
                     var emittedToolCalls: [CursorToolCall] = []
                     var finalOutput: CursorSDKOutput?
@@ -417,7 +418,9 @@ public final class LocalAPIServer: @unchecked Sendable {
                         switch event {
                         case .text(let delta):
                             emittedText += delta
-                            continuation.yield(OpenAICompatibility.chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: delta))
+                            if !bufferTextUntilToolDecision {
+                                continuation.yield(OpenAICompatibility.chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: delta))
+                            }
                         case .toolCall(let toolCall):
                             let index = emittedToolCalls.count
                             emittedToolCalls.append(toolCall)
@@ -428,11 +431,12 @@ public final class LocalAPIServer: @unchecked Sendable {
                     }
 
                     let output = resolvedOutput(finalOutput: finalOutput, emittedText: emittedText, emittedToolCalls: emittedToolCalls)
-                    if output.text.count > emittedText.count, output.text.hasPrefix(emittedText) {
+                    let shouldEmitText = output.toolCalls.isEmpty
+                    if shouldEmitText, output.text.count > emittedText.count, output.text.hasPrefix(emittedText) {
                         let suffix = String(output.text.dropFirst(emittedText.count))
                         continuation.yield(OpenAICompatibility.chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: suffix))
                         emittedText += suffix
-                    } else if emittedText.isEmpty, !output.text.isEmpty {
+                    } else if shouldEmitText, (bufferTextUntilToolDecision || emittedText.isEmpty), !output.text.isEmpty {
                         continuation.yield(OpenAICompatibility.chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: output.text))
                     }
                     if output.toolCalls.count > emittedToolCalls.count {
@@ -472,6 +476,7 @@ public final class LocalAPIServer: @unchecked Sendable {
                     for chunk in OpenAICompatibility.responseStreamStart(id: id, created: created, prepared: prepared) {
                         continuation.yield(chunk)
                     }
+                    let bufferTextUntilToolDecision = !prepared.tools.isEmpty
                     var emittedText = ""
                     var emittedToolCalls: [CursorToolCall] = []
                     var finalOutput: CursorSDKOutput?
@@ -493,9 +498,11 @@ public final class LocalAPIServer: @unchecked Sendable {
                         switch event {
                         case .text(let delta):
                             guard !delta.isEmpty else { continue }
-                            startTextIfNeeded()
                             emittedText += delta
-                            continuation.yield(OpenAICompatibility.responseStreamText(id: id, delta: delta, outputIndex: textOutputIndex))
+                            if !bufferTextUntilToolDecision {
+                                startTextIfNeeded()
+                                continuation.yield(OpenAICompatibility.responseStreamText(id: id, delta: delta, outputIndex: textOutputIndex))
+                            }
                         case .toolCall(let toolCall):
                             let index = emittedToolCalls.count
                             let outputIndex = nextOutputIndex
@@ -510,13 +517,14 @@ public final class LocalAPIServer: @unchecked Sendable {
                     }
 
                     let output = resolvedOutput(finalOutput: finalOutput, emittedText: emittedText, emittedToolCalls: emittedToolCalls)
-                    if output.text.count > emittedText.count, output.text.hasPrefix(emittedText) {
+                    let shouldEmitText = output.toolCalls.isEmpty
+                    if shouldEmitText, output.text.count > emittedText.count, output.text.hasPrefix(emittedText) {
                         let suffix = String(output.text.dropFirst(emittedText.count))
                         if !suffix.isEmpty {
                             startTextIfNeeded()
                             continuation.yield(OpenAICompatibility.responseStreamText(id: id, delta: suffix, outputIndex: textOutputIndex))
                         }
-                    } else if emittedText.isEmpty, !output.text.isEmpty {
+                    } else if shouldEmitText, (bufferTextUntilToolDecision || emittedText.isEmpty), !output.text.isEmpty {
                         startTextIfNeeded()
                         continuation.yield(OpenAICompatibility.responseStreamText(id: id, delta: output.text, outputIndex: textOutputIndex))
                     }
@@ -530,7 +538,7 @@ public final class LocalAPIServer: @unchecked Sendable {
                             }
                         }
                     }
-                    let includeMessage = textStarted || !output.text.isEmpty || output.toolCalls.isEmpty
+                    let includeMessage = output.toolCalls.isEmpty
                     if includeMessage {
                         startTextIfNeeded()
                     }

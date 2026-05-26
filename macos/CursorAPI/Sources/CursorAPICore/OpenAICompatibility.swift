@@ -32,6 +32,8 @@ public struct PreparedChatRequest: Equatable, Sendable {
 }
 
 public enum OpenAICompatibility {
+    private static let toolResultContinuation = "The above tool calls have been executed. Continue your response based on these results."
+
     public static func modelList() -> [String: Any] {
         [
             "object": "list",
@@ -117,11 +119,13 @@ public enum OpenAICompatibility {
         transcript.append("")
         transcript.append("Conversation:")
         var rememberedToolCalls: [String: ResponseToolCallMemory] = [:]
+        var sawToolResult = false
 
         for item in messages {
             let role = (item["role"] as? String) ?? "user"
             let text = contentText(item["content"], role: role)
             if role == "tool" {
+                sawToolResult = true
                 let toolCallID = (item["tool_call_id"] as? String) ?? ""
                 let toolName = (item["name"] as? String) ?? rememberedToolCalls[toolCallID]?.name ?? ""
                 let label = [toolName.isEmpty ? nil : "name=\(toolName)", toolCallID.isEmpty ? nil : "tool_call_id=\(toolCallID)"]
@@ -134,12 +138,13 @@ public enum OpenAICompatibility {
             }
 
             if let toolCalls = item["tool_calls"] as? [[String: Any]] {
-                if let data = try? JSONSerialization.data(withJSONObject: toolCalls, options: [.withoutEscapingSlashes]),
-                   let json = String(data: data, encoding: .utf8) {
-                    transcript.append("\(role.uppercased()) TOOL_CALLS: \(json)")
-                }
+                appendToolCallTranscript(&transcript, role: role, toolCalls: toolCalls)
                 rememberToolCalls(toolCalls, into: &rememberedToolCalls)
             }
+        }
+        if sawToolResult {
+            transcript.append("")
+            transcript.append(toolResultContinuation)
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
@@ -212,7 +217,8 @@ public enum OpenAICompatibility {
         transcript.append("")
         transcript.append("CONVERSATION TO COMPACT:")
         var rememberedToolCalls: [String: ResponseToolCallMemory] = [:]
-        if !appendResponsesInput(raw["input"], to: &transcript, remembered: &rememberedToolCalls) {
+        let appendedInput = appendResponsesInput(raw["input"], to: &transcript, remembered: &rememberedToolCalls)
+        if !appendedInput.appended {
             transcript.append("[empty]")
         }
         appendOptions(&transcript, raw)
@@ -258,8 +264,12 @@ public enum OpenAICompatibility {
         var rememberedToolCalls = rememberedToolCalls
         let input = raw["input"]
         let appendedInput = appendResponsesInput(input, to: &transcript, remembered: &rememberedToolCalls)
-        if !appendedInput {
+        if !appendedInput.appended {
             transcript.append("[empty]")
+        }
+        if appendedInput.sawToolOutput {
+            transcript.append("")
+            transcript.append(toolResultContinuation)
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
@@ -347,7 +357,7 @@ public enum OpenAICompatibility {
         output: CursorSDKOutput
     ) -> [String: Any] {
         let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id)
-        let content: Any = toolCalls.isEmpty || !output.text.isEmpty ? output.text : NSNull()
+        let content: Any = toolCalls.isEmpty ? output.text : NSNull()
         return [
             "id": id,
             "object": "chat.completion",
@@ -433,7 +443,7 @@ public enum OpenAICompatibility {
     ) throws -> Data {
         var data = Data()
         data.append(chatCompletionStreamStart(id: id, created: created, model: prepared.model))
-        if !output.text.isEmpty {
+        if output.toolCalls.isEmpty, !output.text.isEmpty {
             data.append(chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: output.text))
         }
         for (index, toolCall) in output.toolCalls.enumerated() {
@@ -511,7 +521,7 @@ public enum OpenAICompatibility {
             "model": prepared.model,
             "system_fingerprint": NSNull(),
             "choices": [],
-            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count + serializedLength(output.toolCalls.map(\.arguments)))
+            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count + serializedLength(output.toolCalls.map { $0.arguments.mapValues(\.foundationValue) }))
         ])
     }
 
@@ -528,7 +538,7 @@ public enum OpenAICompatibility {
         let messageID = "msg_\(id.dropFirst(5))"
         let toolCallItems = responseToolCallItems(output.toolCalls, prepared: prepared, responseID: id)
         var outputItems: [[String: Any]] = []
-        if !output.text.isEmpty || output.toolCalls.isEmpty {
+        if output.toolCalls.isEmpty {
             outputItems.append([
                 "id": messageID,
                 "type": "message",
@@ -580,7 +590,7 @@ public enum OpenAICompatibility {
             data.append(chunk)
         }
         var outputIndex = 0
-        let includeMessage = !output.text.isEmpty || output.toolCalls.isEmpty
+        let includeMessage = output.toolCalls.isEmpty
         if includeMessage {
             for chunk in responseStreamTextStart(id: id, outputIndex: outputIndex) {
                 data.append(chunk)
@@ -882,18 +892,24 @@ public enum OpenAICompatibility {
         item.objectValue?["id"]?.stringValue
     }
 
+    private struct ResponsesInputAppendResult {
+        var appended: Bool
+        var sawToolOutput: Bool
+    }
+
     @discardableResult
     private static func appendResponsesInput(
         _ value: Any?,
         to transcript: inout [String],
         remembered: inout [String: ResponseToolCallMemory]
-    ) -> Bool {
+    ) -> ResponsesInputAppendResult {
         if let value = value as? String {
             transcript.append(value.isEmpty ? "[empty]" : value)
-            return true
+            return ResponsesInputAppendResult(appended: true, sawToolOutput: false)
         }
         if let items = value as? [[String: Any]] {
             var appended = false
+            var sawToolOutput = false
             for item in items {
                 let type = (item["type"] as? String) ?? ""
                 if type == "function_call" {
@@ -911,6 +927,7 @@ public enum OpenAICompatibility {
                 }
                 if type == "function_call_output" {
                     appended = true
+                    sawToolOutput = true
                     let callID = (item["call_id"] as? String) ?? ""
                     let output = responseInputText(item["output"] ?? item["content"])
                     let rememberedCall = remembered[callID]
@@ -937,21 +954,24 @@ public enum OpenAICompatibility {
                     transcript.append("\(role.uppercased()): \(text)")
                 }
             }
-            return appended
+            return ResponsesInputAppendResult(appended: appended, sawToolOutput: sawToolOutput)
         }
         if let items = value as? [Any] {
             var appended = false
+            var sawToolOutput = false
             for item in items {
-                appended = appendResponsesInput(item, to: &transcript, remembered: &remembered) || appended
+                let result = appendResponsesInput(item, to: &transcript, remembered: &remembered)
+                appended = result.appended || appended
+                sawToolOutput = result.sawToolOutput || sawToolOutput
             }
-            return appended
+            return ResponsesInputAppendResult(appended: appended, sawToolOutput: sawToolOutput)
         }
         let text = responseInputText(value)
         if !text.isEmpty {
             transcript.append(text)
-            return true
+            return ResponsesInputAppendResult(appended: true, sawToolOutput: false)
         }
-        return false
+        return ResponsesInputAppendResult(appended: false, sawToolOutput: false)
     }
 
     private static func parseTools(_ value: Any?, disabled: Bool) -> [OpenAIToolSpec] {
@@ -1070,6 +1090,24 @@ public enum OpenAICompatibility {
         }
     }
 
+    private static func appendToolCallTranscript(_ transcript: inout [String], role: String, toolCalls: [[String: Any]]) {
+        let rendered = toolCalls.compactMap { toolCall -> String? in
+            guard let function = toolCall["function"] as? [String: Any] else { return nil }
+            let id = (toolCall["id"] as? String) ?? "unknown"
+            let name = (function["name"] as? String) ?? "unknown"
+            let arguments = (function["arguments"] as? String) ?? "{}"
+            return "tool_call(id: \(id), name: \(name), args: \(arguments))"
+        }
+        if rendered.isEmpty {
+            if let data = try? JSONSerialization.data(withJSONObject: toolCalls, options: [.withoutEscapingSlashes]),
+               let json = String(data: data, encoding: .utf8) {
+                transcript.append("\(role.uppercased()) TOOL_CALLS: \(json)")
+            }
+            return
+        }
+        transcript.append("\(role.uppercased()) TOOL_CALLS:\n\(rendered.joined(separator: "\n"))")
+    }
+
     private static func toolResultFeedback(
         toolCallID: String,
         toolName: String,
@@ -1183,6 +1221,12 @@ public enum OpenAICompatibility {
             copy("command", as: ["cmd", "script", "input"])
             copy("workingDirectory", as: ["cwd", "workdir", "working_directory", "directory"])
             copy("timeout", as: ["timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"])
+            if let descriptionKey = propertyName(matching: ["description"], in: properties),
+               output[descriptionKey] == nil {
+                let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties)
+                let command = commandKey.flatMap { output[$0]?.stringValue } ?? "shell command"
+                output[descriptionKey] = .string("Run \(command)")
+            }
         case "write":
             copy("path", as: pathPropertyAliases())
             copy("fileText", as: ["file_text", "content", "contents", "text", "fileContent", "file_content"])
@@ -1221,6 +1265,8 @@ public enum OpenAICompatibility {
             copy("query", as: ["pattern", "search"])
             copy("targetDirectories", as: ["target_directories", "directories", "paths"])
             copy("explanation", as: ["reason", "why"])
+        case "todowrite":
+            copy("todos", as: ["todoList", "todo_list", "items"])
         default:
             break
         }
@@ -1238,7 +1284,53 @@ public enum OpenAICompatibility {
             output[commandKey] = .string(detachedShellCommand(command))
         }
 
+        if canonical == "todowrite" {
+            output = normalizeTodoWriteArguments(output)
+        }
+
         return output.isEmpty ? arguments : output
+    }
+
+    private static func normalizeTodoWriteArguments(_ arguments: [String: JSONValue]) -> [String: JSONValue] {
+        guard case .array(let todos)? = arguments["todos"] else {
+            return arguments
+        }
+        var output = arguments
+        output["todos"] = .array(todos.map { item in
+            guard case .object(var todo) = item else {
+                return item
+            }
+            if let status = todo["status"]?.stringValue {
+                todo["status"] = .string(normalizedTodoStatus(status))
+            }
+            if shouldDefaultTodoPriority(todo["priority"]) {
+                todo["priority"] = .string("medium")
+            }
+            return .object(todo)
+        })
+        return output
+    }
+
+    private static func shouldDefaultTodoPriority(_ value: JSONValue?) -> Bool {
+        guard let value else { return true }
+        if case .null = value { return true }
+        if let string = value.stringValue {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return false
+    }
+
+    private static func normalizedTodoStatus(_ value: String) -> String {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "[\\s-]+", with: "_", options: .regularExpression) {
+        case "todo_status_pending", "todo", "pending":
+            return "pending"
+        case "todo_status_inprogress", "todo_status_in_progress", "inprogress", "in_progress":
+            return "in_progress"
+        case "todo_status_done", "todo_status_complete", "todo_status_completed", "done", "complete", "completed":
+            return "completed"
+        default:
+            return value
+        }
     }
 
     private static func shouldDetachShellCommand(_ command: String) -> Bool {
@@ -1327,6 +1419,8 @@ public enum OpenAICompatibility {
             return has(["toolName", "tool_name", "tool", "name"])
         case "semsearch":
             return has(["query", "pattern", "search"])
+        case "todowrite":
+            return has(["todos", "todoList", "todo_list", "items"])
         default:
             return false
         }
@@ -1371,6 +1465,8 @@ public enum OpenAICompatibility {
             return "readlints"
         case "semanticsearch", "semsearch", "searchcode":
             return "semsearch"
+        case "updatetodos", "updatetodostoolcall", "writetodos", "todowrite", "todowritetoolcall":
+            return "todowrite"
         case "callmcptool":
             return "mcp"
         default:
@@ -1400,6 +1496,8 @@ public enum OpenAICompatibility {
             return ["mcp", "call_mcp_tool"]
         case "semsearch":
             return ["sem_search", "semantic_search", "search_code"]
+        case "todowrite":
+            return ["todowrite", "todo_write", "update_todos", "updateTodos", "write_todos"]
         default:
             return [name]
         }
@@ -1442,7 +1540,11 @@ public enum OpenAICompatibility {
     }
 
     private static func serializedLength(_ value: Any) -> Int {
-        (try? JSONSerialization.data(withJSONObject: value)).map(\.count) ?? 0
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return 0
+        }
+        return data.count
     }
 
     private static func jsonString(_ value: Any) -> String {

@@ -46,4 +46,53 @@ final class ProtobufTests: XCTestCase {
         XCTAssertTrue(CursorSDKStreamMarkers.hasTurnEnded(frame))
         XCTAssertFalse(CursorSDKStreamMarkers.hasTurnEnded(Proto.message([Proto.messageField(1, Proto.message([]))])))
     }
+
+    func testDetectsSDKToolCallMarkers() {
+        let shellArgs = Proto.message([Proto.stringField(1, "pwd")])
+        let execShell = Proto.message([Proto.messageField(2, shellArgs)])
+        let execFrame = Proto.message([Proto.messageField(2, execShell)])
+
+        let interactionShell = Proto.message([Proto.messageField(1, shellArgs)])
+        let toolCallUpdate = Proto.message([Proto.messageField(2, interactionShell)])
+        let interaction = Proto.message([Proto.messageField(2, toolCallUpdate)])
+        let interactionFrame = Proto.message([Proto.messageField(1, interaction)])
+
+        let context = CursorSDKProto.requestContextResult(id: 42, execID: "exec-1")
+        let contextFields = Proto.decodeFields(context)
+        guard case .bytes(let execMessage)? = contextFields.first(where: { $0.number == 2 })?.value else {
+            XCTFail("Expected exec message")
+            return
+        }
+        let contextFrame = Proto.message([Proto.messageField(2, execMessage)])
+
+        XCTAssertTrue(CursorSDKStreamMarkers.hasToolCall(execFrame))
+        XCTAssertTrue(CursorSDKStreamMarkers.hasToolCall(interactionFrame))
+        XCTAssertFalse(CursorSDKStreamMarkers.hasToolCall(contextFrame))
+    }
+
+    func testNativeTransportConsumesRequestContextBeforeTurnEndDetection() {
+        let context = CursorSDKProto.requestContextResult(id: 42, execID: "exec-1")
+        let fields = Proto.decodeFields(context)
+        guard case .bytes(let execMessage)? = fields.first(where: { $0.number == 2 })?.value else {
+            XCTFail("Expected exec message")
+            return
+        }
+        let turnEnded = Proto.message([Proto.varintField(2, 1)])
+        let interaction = Proto.message([Proto.messageField(14, turnEnded)])
+        let combined = Proto.message([
+            Proto.messageField(2, execMessage),
+            Proto.messageField(1, interaction)
+        ])
+
+        let beforeContext = CursorSDKFrameRouter.action(for: combined, requestContextAlreadySent: false)
+        XCTAssertEqual(beforeContext.requestContext, CursorSDKRequestContext(id: 42, execID: "exec-1"))
+        XCTAssertFalse(beforeContext.shouldForwardToDecoder)
+        XCTAssertFalse(beforeContext.isTurnEnded)
+
+        let afterContext = CursorSDKFrameRouter.action(for: combined, requestContextAlreadySent: true)
+        XCTAssertNil(afterContext.requestContext)
+        XCTAssertTrue(afterContext.shouldForwardToDecoder)
+        XCTAssertTrue(afterContext.isTurnEnded)
+        XCTAssertFalse(afterContext.hasToolCall)
+    }
 }

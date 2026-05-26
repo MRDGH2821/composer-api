@@ -148,8 +148,9 @@ async function proxySdkRun(response, input) {
             continue;
           }
           const turnEnded = decodeTurnEndedEvent(frame.payload);
+          const toolCallReady = decodeToolCallEvent(frame.payload);
           response.write(frame.raw);
-          if (turnEnded) {
+          if (turnEnded || toolCallReady) {
             request.close(http2.constants.NGHTTP2_CANCEL);
             response.end();
             finish();
@@ -267,6 +268,25 @@ function decodeTurnEndedEvent(payload) {
     for (const field of decodeProtobufFields(payload)) {
       if (field.no !== 1 || !(field.value instanceof Uint8Array)) continue;
       if (decodeProtobufFields(field.value).some((item) => item.no === 14)) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function decodeToolCallEvent(payload) {
+  try {
+    for (const field of decodeProtobufFields(payload)) {
+      if (field.no === 1 && field.value instanceof Uint8Array) {
+        const interactionFields = decodeProtobufFields(field.value);
+        if (interactionFields.some((item) => [2, 3, 7].includes(item.no) && item.value instanceof Uint8Array)) return true;
+      }
+      if (field.no === 2 && field.value instanceof Uint8Array) {
+        const execFields = decodeProtobufFields(field.value);
+        if (execFields.some((item) => item.no === 10)) continue;
+        if (execFields.some((item) => [2, 3, 4, 5, 7, 8, 9, 11, 14].includes(item.no) && item.value instanceof Uint8Array)) return true;
+      }
     }
   } catch {
     return false;

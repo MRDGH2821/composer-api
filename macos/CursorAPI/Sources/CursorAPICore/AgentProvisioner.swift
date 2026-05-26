@@ -99,6 +99,8 @@ public final class AgentProvisioner: @unchecked Sendable {
         let url = opencodeConfigURL()
         var root = try readJSONObject(url, defaultValue: [:])
         var provider = root["provider"] as? [String: Any] ?? [:]
+        provider.removeValue(forKey: "cursor")
+        provider.removeValue(forKey: "cursorsdk")
         provider["cursorapi"] = [
             "npm": "@ai-sdk/openai-compatible",
             "name": CursorAPIBrand.displayName,
@@ -109,8 +111,11 @@ public final class AgentProvisioner: @unchecked Sendable {
             "models": opencodeModelDefinitions()
         ]
         root["provider"] = provider
-        if root["model"] == nil {
-            root["model"] = "cursorapi/composer-2.5"
+        if let model = stringValue(root["model"]),
+           model.hasPrefix("cursor/") || model.hasPrefix("cursorsdk/") {
+            root["model"] = "cursorapi/composer-2.5-fast"
+        } else if root["model"] == nil {
+            root["model"] = "cursorapi/composer-2.5-fast"
         }
         try writeJSONObject(root, to: url)
     }

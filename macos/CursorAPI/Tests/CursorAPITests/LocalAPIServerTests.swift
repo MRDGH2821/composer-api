@@ -1333,7 +1333,45 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(prepared.prompt.contains("LOCAL TOOL INVENTORY"))
         XCTAssertTrue(prepared.prompt.contains("FUNCTION CALL OUTPUT"))
         XCTAssertTrue(prepared.prompt.contains("LOCAL TOOL RESULT"))
+        XCTAssertTrue(prepared.prompt.contains("The above tool calls have been executed. Continue your response based on these results."))
         XCTAssertTrue(prepared.prompt.contains("/tmp/project"))
+    }
+
+    func testChatToolResultsRenderPriorCallsAndContinuationPrompt() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"run pwd"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_1",
+                  "type":"function",
+                  "function":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_1","content":"/tmp/project"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"bash",
+                "parameters":{"type":"object","properties":{"command":{"type":"string"}}}
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        XCTAssertTrue(prepared.prompt.contains("tool_call(id: call_1, name: bash, args: {\"command\":\"pwd\"})"))
+        XCTAssertTrue(prepared.prompt.contains("TOOL RESULT (name=bash tool_call_id=call_1)"))
+        XCTAssertTrue(prepared.prompt.contains("LOCAL TOOL RESULT"))
+        XCTAssertTrue(prepared.prompt.contains("The above tool calls have been executed. Continue your response based on these results."))
     }
 
     func testResponsesToolChoiceDirectFunctionShapeAddsPromptHint() throws {
@@ -1438,6 +1476,7 @@ final class LocalAPIServerTests: XCTestCase {
                   "type":"object",
                   "properties":{
                     "command":{"type":"string"},
+                    "description":{"type":"string"},
                     "cwd":{"type":"string"},
                     "timeout_ms":{"type":"number"}
                   }
@@ -1462,12 +1501,14 @@ final class LocalAPIServerTests: XCTestCase {
 
         let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
         let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        XCTAssertTrue(message["content"] is NSNull)
         let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
         let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
         let arguments = try decodedArguments(function)
 
         XCTAssertEqual(function["name"] as? String, "bash")
         XCTAssertEqual(arguments["command"] as? String, "pwd")
+        XCTAssertEqual(arguments["description"] as? String, "Run pwd")
         XCTAssertEqual(arguments["cwd"] as? String, "/tmp/project")
         XCTAssertEqual((arguments["timeout_ms"] as? NSNumber)?.doubleValue, 30)
         XCTAssertNil(arguments["workingDirectory"])
@@ -1589,6 +1630,53 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["fileText"])
     }
 
+    func testFunctionCallsMapSDKUpdateTodosToClientTodoWriteSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"make todos"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"todowrite",
+                "parameters":{
+                  "type":"object",
+                  "properties":{"todos":{"type":"array"}}
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "updateTodos", arguments: [
+            "todos": .array([
+                .object([
+                    "content": .string("Ship local API"),
+                    "status": .string("todo_status_in_progress")
+                ])
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let todos = try XCTUnwrap(arguments["todos"] as? [[String: Any]])
+
+        XCTAssertEqual(function["name"] as? String, "todowrite")
+        XCTAssertEqual(todos.first?["status"] as? String, "in_progress")
+        XCTAssertEqual(todos.first?["priority"] as? String, "medium")
+    }
+
     func testFunctionCallsPreserveSDKToolWhenNoClientToolMatches() throws {
         let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
         {
@@ -1612,6 +1700,61 @@ final class LocalAPIServerTests: XCTestCase {
 
         XCTAssertEqual(functionCall["name"] as? String, "shell")
         XCTAssertEqual(arguments["command"] as? String, "pwd")
+    }
+
+    func testChatCompletionsStreamingSuppressesTextBeforeToolCall() async throws {
+        let port = try unusedTCPPort()
+        let toolCall = CursorToolCall(name: "shell", arguments: ["command": .string("pwd")])
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness(events: [
+            .text("I will run that."),
+            .toolCall(toolCall),
+            .done(CursorSDKOutput(text: "I will run that.", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test"))
+        ]))
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"""
+        {
+          "model":"composer-2.5",
+          "stream":true,
+          "messages":[{"role":"user","content":"run pwd"}],
+          "tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]
+        }
+        """#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains(#""tool_calls""#))
+        XCTAssertTrue(text.contains(#""name":"bash""#))
+        XCTAssertTrue(text.contains(#""finish_reason":"tool_calls""#))
+        XCTAssertFalse(text.contains("I will run that."))
+    }
+
+    func testChatCompletionStreamUsageSerializesToolArguments() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"run pwd"}],
+          "tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(
+            text: "",
+            toolCalls: [CursorToolCall(name: "shell", arguments: ["command": .string("pwd")])],
+            agentID: "agent-test",
+            runID: "run-test"
+        )
+
+        let data = OpenAICompatibility.chatCompletionStreamUsage(id: "chatcmpl_test", created: 1, prepared: prepared, output: output)
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertTrue(text.contains(#""usage":"#))
+        XCTAssertTrue(text.contains(#""completion_tokens":"#))
     }
 
     func testChatCompletionsStreamingFlushesTextDeltas() async throws {
@@ -1737,6 +1880,40 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(text.contains("pwd"))
         XCTAssertFalse(text.contains("event: response.content_part.added"))
         XCTAssertFalse(text.contains("event: response.output_text.done"))
+        XCTAssertFalse(text.contains(#""type":"message""#))
+    }
+
+    func testResponsesStreamingSuppressesTextBeforeFunctionCall() async throws {
+        let port = try unusedTCPPort()
+        let toolCall = CursorToolCall(name: "shell", arguments: ["command": .string("pwd")])
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness(events: [
+            .text("I will run that."),
+            .toolCall(toolCall),
+            .done(CursorSDKOutput(text: "I will run that.", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test"))
+        ]))
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/responses")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"""
+        {
+          "model":"composer-2.5",
+          "stream":true,
+          "input":"run pwd",
+          "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]
+        }
+        """#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains(#""type":"function_call""#))
+        XCTAssertTrue(text.contains(#""name":"shell""#))
+        XCTAssertFalse(text.contains("I will run that."))
+        XCTAssertFalse(text.contains("event: response.content_part.added"))
         XCTAssertFalse(text.contains(#""type":"message""#))
     }
 }
