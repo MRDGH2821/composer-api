@@ -150,7 +150,8 @@ public enum OpenAICompatibility {
         if sawToolResult {
             transcript.append("")
             transcript.append(toolResultContinuation)
-        } else if shouldRequireLocalTool(for: latestUserText, tools: tools) {
+        }
+        if shouldRequireLocalTool(for: latestUserText, tools: tools) {
             appendRequiredLocalToolHint(&transcript, tools: tools)
         }
         appendOptions(&transcript, raw)
@@ -278,7 +279,8 @@ public enum OpenAICompatibility {
         if appendedInput.sawToolOutput {
             transcript.append("")
             transcript.append(toolResultContinuation)
-        } else if shouldRequireLocalTool(for: latestUserText(from: input), tools: tools) {
+        }
+        if shouldRequireLocalTool(for: latestUserText(from: input), tools: tools) {
             appendRequiredLocalToolHint(&transcript, tools: tools)
         }
         appendOptions(&transcript, raw)

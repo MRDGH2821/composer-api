@@ -1456,6 +1456,50 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(prepared.prompt.contains("The above tool calls have been executed. Continue your response based on these results."))
     }
 
+    func testChatFileRequestAfterPriorToolResultStillRequiresLocalTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"run pwd"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_1",
+                  "type":"function",
+                  "function":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_1","content":"/tmp/project"},
+            {"role":"assistant","content":"done"},
+            {"role":"user","content":"Create rain-in-spain.html in this project."}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"bash",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "command":{"type":"string"},
+                    "description":{"type":"string"}
+                  }
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        XCTAssertTrue(prepared.prompt.contains("The above tool calls have been executed. Continue your response based on these results."))
+        XCTAssertTrue(prepared.prompt.contains("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST"))
+        XCTAssertTrue(prepared.prompt.contains("Use SDK shell now."))
+    }
+
     func testResponsesToolChoiceDirectFunctionShapeAddsPromptHint() throws {
         let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
         {

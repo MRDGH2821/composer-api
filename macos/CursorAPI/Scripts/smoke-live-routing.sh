@@ -16,7 +16,8 @@ Usage: CURSOR_API_TEST_KEY=crsr_... $0 [--app PATH] [--timeout SECONDS] [--skip-
 Launch the packaged macOS app and verify the live Composer routing path using
 an environment-provided Cursor API key. This checks direct chat completions,
 streaming chat completions, Responses API output, SDK bridge process reuse, and
-an OpenCode interactive tool round trip when opencode and tmux are installed.
+OpenCode interactive tool/file-write round trips when opencode and tmux are
+installed.
 
   --app PATH        App bundle to launch. Defaults to dist/API for Cursor.app.
   --timeout N       Seconds to wait for app and live requests. Default: 45.
@@ -363,6 +364,8 @@ JSON
   session="api-for-cursor-live-opencode-$$"
   marker="AFC_TOOL_DONE_$$"
   tool_file="opencode_live_tool_smoke.txt"
+  file_marker="AFC_FILE_WRITE_DONE_$$"
+  generated_file="rain-in-spain-live.html"
   tmux new-session -d -x 180 -y 56 -s "$session" "cd \"$temp_project\" && HOME=\"$temp_home\" XDG_CONFIG_HOME=\"$temp_config\" opencode --pure run --interactive --dangerously-skip-permissions --model cursorapi/composer-2.5-fast"
   sleep 4
   tmux send-keys -t "$session" "Use the bash tool to run exactly: printf TOOL_OK > $tool_file. After the tool succeeds, reply exactly: $marker" Enter
@@ -376,8 +379,32 @@ JSON
       && [ "$(cat "$temp_project/$tool_file")" = "TOOL_OK" ] \
       && [ "${marker_count:-0}" -ge 2 ] \
       && printf "%s\n" "$last_capture" | grep -F "API for Cursor" >/dev/null; then
-      tmux kill-session -t "$session" >/dev/null 2>&1 || true
       echo "Verified live OpenCode interactive tool execution through API for Cursor."
+      break
+    fi
+    sleep 1
+  done
+
+  if [ ! -f "$temp_project/$tool_file" ] \
+    || [ "$(cat "$temp_project/$tool_file" 2>/dev/null || true)" != "TOOL_OK" ] \
+    || [ "${marker_count:-0}" -lt 2 ]; then
+    printf "%s\n" "$last_capture" | tail -80
+    tmux kill-session -t "$session" >/dev/null 2>&1 || true
+    fail "OpenCode did not execute the live tool round trip before timeout"
+  fi
+
+  tmux send-keys -t "$session" "Create $generated_file in the current project containing a short HTML page about how the rain in Spain falls mainly on the plain. After the tool succeeds, reply exactly: $file_marker" Enter
+
+  deadline=$((SECONDS + TIMEOUT_SECONDS))
+  last_capture=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    last_capture="$(tmux capture-pane -t "$session" -p -J -S -260 2>/dev/null || true)"
+    file_marker_count="$( (printf "%s\n" "$last_capture" | grep -F "$file_marker" || true) | wc -l | tr -d " " )"
+    if [ -f "$temp_project/$generated_file" ] \
+      && grep -E "rain in Spain|Rain in Spain|plain" "$temp_project/$generated_file" >/dev/null \
+      && [ "${file_marker_count:-0}" -ge 2 ]; then
+      tmux kill-session -t "$session" >/dev/null 2>&1 || true
+      echo "Verified live OpenCode generic file write through API for Cursor."
       bridge_count="$(bridge_process_count)"
       [ "$bridge_count" = "1" ] || fail "expected one shared SDK bridge process after OpenCode, found $bridge_count"
       exit 0
@@ -387,5 +414,5 @@ JSON
 
   printf "%s\n" "$last_capture" | tail -80
   tmux kill-session -t "$session" >/dev/null 2>&1 || true
-  fail "OpenCode did not execute the live tool round trip before timeout"
+  fail "OpenCode did not execute the live generic file write before timeout"
 fi
