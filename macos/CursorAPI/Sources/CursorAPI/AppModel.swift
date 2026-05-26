@@ -99,12 +99,27 @@ final class CursorAPIAppModel: ObservableObject {
     }
 
     var installAllIntegrationsTitle: String {
+        Self.installAllIntegrationsTitle(
+            for: integrations,
+            isRunning: isRunning,
+            needsKeychainPermission: needsKeychainPermission
+        )
+    }
+
+    nonisolated static func installAllIntegrationsTitle(
+        for integrations: [AgentIntegrationStatus],
+        isRunning: Bool,
+        needsKeychainPermission: Bool
+    ) -> String {
         let pending = integrations.filter { $0.canInstall && !$0.installed }
         if pending.isEmpty {
             return "Installed"
         }
         let action = pending.contains(where: \.needsUpdate) ? "Update All" : "Install All"
-        return isRunning && !needsKeychainPermission ? action : "Start & \(action)"
+        if needsKeychainPermission {
+            return "Unlock & \(action)"
+        }
+        return isRunning ? action : "Start & \(action)"
     }
 
     var canPrepareAgentConfigs: Bool {

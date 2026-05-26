@@ -29,7 +29,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CursorAPITests",
-            dependencies: ["CursorAPICore"],
+            dependencies: ["CursorAPICore", "CursorAPI"],
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
