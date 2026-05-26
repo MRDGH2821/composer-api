@@ -14,6 +14,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICONSET_DIR="$RESOURCES_DIR/APIForCursor.iconset"
+APP_ICON_SOURCE="$ROOT_DIR/Sources/CursorAPI/Resources/APIForCursor.png"
 REQUIRE_BUNDLED_TRANSPORT="${CURSOR_API_REQUIRE_BUNDLED_TRANSPORT:-0}"
 
 while [ "$#" -gt 0 ]; do
@@ -53,6 +54,8 @@ cp "$BUILD_DIR/CursorAPI" "$MACOS_DIR/$EXECUTABLE_NAME"
 if [ -d "$BUILD_DIR/CursorAPI_CursorAPI.bundle" ]; then
   cp -R "$BUILD_DIR/CursorAPI_CursorAPI.bundle" "$RESOURCES_DIR/"
 fi
+[ -s "$APP_ICON_SOURCE" ] || { echo "Missing app icon source at $APP_ICON_SOURCE" >&2; exit 1; }
+cp "$APP_ICON_SOURCE" "$RESOURCES_DIR/APIForCursor.png"
 swift - "$RESOURCES_DIR" "$ROOT_DIR" <<'SWIFT'
 import Foundation
 import Darwin

@@ -70,10 +70,12 @@ INFO_PLIST="$APP_PATH/Contents/Info.plist"
 APP_NAME="$(plist_value CFBundleDisplayName "$INFO_PLIST")"
 BUNDLE_ID="$(plist_value CFBundleIdentifier "$INFO_PLIST")"
 ICON_PATH="$APP_PATH/Contents/Resources/APIForCursor.icns"
+RUNTIME_ICON_PATH="$APP_PATH/Contents/Resources/APIForCursor.png"
 
 [ "$APP_NAME" = "API for Cursor" ] || fail "unexpected app name: $APP_NAME"
 [ "$BUNDLE_ID" = "ai.standardagents.cursorapi" ] || fail "unexpected bundle id: $BUNDLE_ID"
 [ -s "$ICON_PATH" ] || fail "app icon is missing"
+[ -s "$RUNTIME_ICON_PATH" ] || fail "runtime app icon PNG is missing"
 
 ICON_WIDTH="$(sips -g pixelWidth "$ICON_PATH" 2>/dev/null | awk '/pixelWidth:/ {print $2; exit}')"
 ICON_HEIGHT="$(sips -g pixelHeight "$ICON_PATH" 2>/dev/null | awk '/pixelHeight:/ {print $2; exit}')"

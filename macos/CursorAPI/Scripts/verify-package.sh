@@ -40,6 +40,7 @@ plist_has_nonempty_value() {
 
 [ -x "$MACOS_DIR/$APP_NAME" ] || fail "main executable is missing or not executable"
 [ -s "$RESOURCES_DIR/APIForCursor.icns" ] || fail "app icon is missing"
+[ -s "$RESOURCES_DIR/APIForCursor.png" ] || fail "runtime app icon PNG is missing"
 swift - "$RESOURCES_DIR/APIForCursor.icns" <<'SWIFT' || fail "app icon does not contain the bridge artwork"
 import AppKit
 import Foundation
