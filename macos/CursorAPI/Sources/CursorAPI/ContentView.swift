@@ -93,6 +93,10 @@ struct ContentView: View {
             HStack {
                 SectionTitle("One-Click Setup")
                 Spacer()
+                PillActionButton(model.installAllIntegrationsTitle) {
+                    model.installAllIntegrations()
+                }
+                .disabled(!model.canInstallAllIntegrations)
                 IconActionButton(systemName: "arrow.clockwise", help: "Refresh installed status") {
                     model.refreshIntegrations()
                 }

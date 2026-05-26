@@ -72,6 +72,22 @@ final class CursorAPIAppModel: ObservableObject {
         hasCursorAPIKey && sdkConfigured && !isCheckingSDK
     }
 
+    var pendingIntegrationInstallCount: Int {
+        integrations.filter { $0.canInstall && !$0.installed }.count
+    }
+
+    var canInstallAllIntegrations: Bool {
+        pendingIntegrationInstallCount > 0
+    }
+
+    var installAllIntegrationsTitle: String {
+        let pending = integrations.filter { $0.canInstall && !$0.installed }
+        if pending.isEmpty {
+            return "Installed"
+        }
+        return pending.contains(where: \.needsUpdate) ? "Update All" : "Install All"
+    }
+
     func startServer(allowKeychainPrompt: Bool = true, resolveSavedKey: Bool = true) {
         guard hasCursorAPIKey else {
             isRunning = false
@@ -194,6 +210,16 @@ final class CursorAPIAppModel: ObservableObject {
             refreshIntegrations()
             lastError = nil
         } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func installAllIntegrations() {
+        do {
+            integrations = try provisioner.installAll(settings: settings)
+            lastError = nil
+        } catch {
+            refreshIntegrations()
             lastError = error.localizedDescription
         }
     }

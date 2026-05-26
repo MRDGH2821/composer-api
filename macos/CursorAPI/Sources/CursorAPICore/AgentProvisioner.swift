@@ -55,6 +55,13 @@ public final class AgentProvisioner: @unchecked Sendable {
         }
     }
 
+    public func installAll(settings: CursorAPISettings) throws -> [AgentIntegrationStatus] {
+        for status in statuses(settings: settings) where status.canInstall && !status.installed {
+            try install(status.id, settings: settings)
+        }
+        return statuses(settings: settings)
+    }
+
     private func opencodeStatus(settings: CursorAPISettings) -> AgentIntegrationStatus {
         let url = opencodeConfigURL()
         guard fileManager.fileExists(atPath: url.path) else {

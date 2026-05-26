@@ -307,6 +307,55 @@ final class AgentProvisionerTests: XCTestCase {
         XCTAssertFalse(generatedText.contains("crsr_"))
     }
 
+    func testInstallAllInstallsEverySupportedIntegration() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let settings = CursorAPISettings(port: 8787)
+
+        let statuses = try provisioner.installAll(settings: settings)
+
+        XCTAssertEqual(Set(statuses.map(\.id)), Set(AgentIntegrationID.allCases))
+        XCTAssertTrue(statuses.allSatisfy(\.installed))
+        XCTAssertTrue(statuses.allSatisfy { $0.actionTitle == "Installed" })
+
+        let generatedText = try allGeneratedConfigText(under: home)
+        XCTAssertTrue(generatedText.contains("http://127.0.0.1:8787/v1"))
+        XCTAssertTrue(generatedText.contains("composer-2.5"))
+        XCTAssertTrue(generatedText.contains("composer-2.5-fast"))
+        XCTAssertTrue(generatedText.contains("cursor-local"))
+        XCTAssertFalse(generatedText.contains("cursor-api.standardagents.ai"))
+        XCTAssertFalse(generatedText.contains("crsr_"))
+    }
+
+    func testInstallAllUpdatesStaleProviderWithoutDuplicatingInstalledConfigs() throws {
+        let home = try temporaryHome()
+        let provisioner = AgentProvisioner(homeDirectory: home)
+        let original = CursorAPISettings(port: 8787)
+        let moved = CursorAPISettings(port: 9999)
+
+        _ = try provisioner.installAll(settings: original)
+        _ = try provisioner.installAll(settings: moved)
+        _ = try provisioner.installAll(settings: moved)
+
+        for status in provisioner.statuses(settings: moved) {
+            XCTAssertTrue(status.installed, "\(status.id.displayName) should be current after bulk update")
+        }
+
+        let opencode = try String(contentsOf: home.appending(path: ".config/opencode/opencode.json"), encoding: .utf8)
+        let codex = try String(contentsOf: home.appending(path: ".codex/config.toml"), encoding: .utf8)
+        let kilo = try String(contentsOf: home.appending(path: ".config/kilo/kilo.jsonc"), encoding: .utf8)
+        let pi = try String(contentsOf: home.appending(path: ".pi/agent/models.json"), encoding: .utf8)
+
+        XCTAssertEqual(countOccurrences(of: "\"cursorapi\"", in: opencode), 1)
+        XCTAssertEqual(countOccurrences(of: "[model_providers.cursorapi]", in: codex), 1)
+        XCTAssertEqual(countOccurrences(of: "\"cursorapi\"", in: kilo), 1)
+        XCTAssertEqual(countOccurrences(of: "\"cursorapi\"", in: pi), 1)
+        for currentConfig in [opencode, codex, kilo, pi] {
+            XCTAssertFalse(currentConfig.contains("http://127.0.0.1:8787/v1"))
+            XCTAssertTrue(currentConfig.contains("http://127.0.0.1:9999/v1"))
+        }
+    }
+
     func testStatusesRequireCurrentLocalBaseURL() throws {
         let home = try temporaryHome()
         let provisioner = AgentProvisioner(homeDirectory: home)
