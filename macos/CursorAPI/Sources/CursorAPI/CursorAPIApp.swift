@@ -22,7 +22,9 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
-        revealMainWindow()
+        DispatchQueue.main.async { [weak self] in
+            self?.revealMainWindow()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -36,14 +38,14 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     private func revealMainWindow() {
         NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
         if let window = mainWindow {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            show(window)
             return
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 893, height: 592),
+            contentRect: Self.defaultWindowFrame(),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -55,10 +57,36 @@ final class CursorAPIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
         window.minSize = NSSize(width: 760, height: 560)
         window.delegate = self
         window.contentViewController = NSHostingController(rootView: CursorAPIAppRootView(model: model))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
         mainWindow = window
+        show(window)
+    }
+
+    private func show(_ window: NSWindow) {
+        let frame = window.frame.width < 100 || window.frame.height < 100 ? Self.defaultWindowFrame() : window.frame
+        window.setFrame(frame, display: true)
+        window.contentView?.needsDisplay = true
+        window.displayIfNeeded()
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.setIsVisible(true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+    }
+
+    private static func defaultWindowFrame() -> NSRect {
+        let size = NSSize(width: 893, height: 592)
+        guard let screenFrame = NSScreen.main?.visibleFrame else {
+            return NSRect(origin: .zero, size: size)
+        }
+        return NSRect(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -130,8 +158,5 @@ private struct CursorAPIAppRootView: View {
     var body: some View {
         ContentView(model: model)
             .frame(minWidth: 760, minHeight: 560)
-            .task {
-                model.startServer(allowKeychainPrompt: false)
-            }
     }
 }

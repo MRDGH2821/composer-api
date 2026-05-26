@@ -404,9 +404,9 @@ struct TransportSetupPanel: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Internal Composer routing missing")
+                Text("Bundled Composer transport missing")
                     .font(.callout.weight(.semibold))
-                Text("This development build was packaged without the private routing defaults needed to reach Composer. Release builds should bundle this automatically.")
+                Text("This development build was packaged without the private transport defaults needed to reach Composer. Release builds bundle this automatically.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -515,7 +515,7 @@ struct SDKConnectivityPanel: View {
         }
         switch model.sdkCheckState {
         case .idle:
-            return model.sdkConfigured ? "Composer Ready to Check" : "Routing Missing"
+            return model.sdkConfigured ? "Composer Ready to Check" : "Transport Missing"
         case .success:
             return "Composer Check Passed"
         case .failure:
@@ -529,7 +529,7 @@ struct SDKConnectivityPanel: View {
         }
         switch model.sdkCheckState {
         case .idle:
-            return model.sdkConfigured ? "Ready to verify Composer through the bundled local harness." : "This build is missing bundled Composer routing."
+            return model.sdkConfigured ? "Ready to verify Composer through the bundled local harness." : "This app build is missing its bundled Composer transport."
         case .success(let message), .failure(let message):
             return message
         }
@@ -573,8 +573,8 @@ struct SettingsPage: View {
                 )
                 SettingsSummaryTile(
                     icon: model.isRunning ? "checkmark.circle.fill" : "power.circle",
-                    title: model.isRunning ? "API Running" : (model.sdkConfigured ? (model.hasCursorAPIKey ? "Ready to Start" : "Needs Key") : "Routing Missing"),
-                    detail: model.isRunning ? model.baseURL : (model.sdkConfigured ? "Bundled routing" : "Development build"),
+                    title: model.isRunning ? "API Running" : (model.sdkConfigured ? (model.hasCursorAPIKey ? "Ready to Start" : "Needs Key") : "Build Incomplete"),
+                    detail: model.isRunning ? model.baseURL : (model.sdkConfigured ? "Bundled transport" : "Transport missing"),
                     tone: model.isRunning && model.sdkConfigured ? .ok : (model.sdkConfigured ? .muted : .warning)
                 )
                 SettingsSummaryTile(
@@ -681,7 +681,7 @@ struct AdvancedTransportGroup: View {
             VStack(alignment: .leading, spacing: 10) {
                 TransportOverrideNotice(configured: model.sdkConfigured)
 
-                Text("\(CursorAPIBrand.displayName) includes the SDK-compatible local harness. These fields only override its internal Composer routing; changing the client version alone does not enable missing routing.")
+                Text("\(CursorAPIBrand.displayName) includes the SDK-compatible local harness. These fields only override its bundled Composer transport; changing the client version alone does not repair a missing transport.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 6)
@@ -718,9 +718,9 @@ struct AdvancedTransportGroup: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Advanced Routing Overrides")
+                    Text("Advanced Transport Overrides")
                         .font(.callout.weight(.semibold))
-                    Text(model.sdkConfigured ? "Internal routing configured" : "No internal routing configured")
+                    Text(model.sdkConfigured ? "Bundled transport configured" : "Bundled transport missing")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -745,9 +745,9 @@ struct TransportOverrideNotice: View {
                 .background((configured ? Color.green : Color.blue).opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 2) {
-                Text(configured ? "Internal routing configured" : "Internal routing missing")
+                Text(configured ? "Bundled transport configured" : "Bundled transport missing")
                     .font(.caption.weight(.semibold))
-                Text(configured ? "Save Settings restarts the local API with these routing settings." : "A distributable build should bundle these defaults. Client Version by itself only changes a request header.")
+                Text(configured ? "Save Settings restarts the local API with these transport settings." : "A distributable build should bundle these defaults. Client Version by itself only changes a request header.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

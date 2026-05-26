@@ -55,7 +55,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     var sdkStatusText: String {
         if !sdkConfigured {
-            return "Routing Missing"
+            return "Build Incomplete"
         }
         if !hasCursorAPIKey {
             return "Needs API Key"
@@ -76,7 +76,7 @@ final class CursorAPIAppModel: ObservableObject {
         }
         guard sdkConfigured else {
             isRunning = false
-            statusText = "This build is missing internal Composer routing"
+            statusText = "This app build is missing bundled Composer transport"
             lastError = nil
             return
         }
@@ -180,7 +180,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     func checkSDKConnectivity() {
         guard canCheckSDK else {
-            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This build is missing internal Composer routing.")
+            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This app build is missing bundled Composer transport.")
             return
         }
         isCheckingSDK = true
@@ -207,13 +207,13 @@ final class CursorAPIAppModel: ObservableObject {
 
     private func updateStatusText() {
         if isRunning {
-            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); internal routing missing"
+            statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bundled transport missing"
         } else if needsKeychainPermission {
             statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
             statusText = "Enter a Cursor API key to start the local API"
         } else if !sdkConfigured {
-            statusText = "This build is missing internal Composer routing"
+            statusText = "This app build is missing bundled Composer transport"
         } else {
             statusText = "Ready to start local API"
         }
