@@ -232,7 +232,8 @@ public final class LocalAPIServer: @unchecked Sendable {
                 guard let data = await responseSessions.responseInputItemsData(responseID: responseID) else {
                     throw CursorAPIError.notFound
                 }
-                return readResponse(withCORS(HTTPResponse.data(data, contentType: "application/json; charset=utf-8")), method: method)
+                let listData = try paginatedInputItemsData(data, query: request.query)
+                return readResponse(withCORS(HTTPResponse.data(listData, contentType: "application/json; charset=utf-8")), method: method)
             }
             if method == "DELETE", let responseID = responseID(from: path) {
                 guard await responseSessions.deleteResponse(responseID: responseID) else {
@@ -625,6 +626,54 @@ public final class LocalAPIServer: @unchecked Sendable {
         let value = String(path[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("/") else { return nil }
         return value
+    }
+
+    private func paginatedInputItemsData(_ data: Data, query: String?) throws -> Data {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let inputItems = root["data"] as? [[String: Any]] else {
+            return data
+        }
+        let parameters = queryParameters(query)
+        let order = parameters["order"]?.lowercased() == "desc" ? "desc" : "asc"
+        let limit = max(1, min(Int(parameters["limit"] ?? "") ?? inputItems.count, 100))
+        var items: [[String: Any]] = order == "desc" ? Array(inputItems.reversed()) : inputItems
+
+        if let after = parameters["after"]?.trimmingCharacters(in: .whitespacesAndNewlines), !after.isEmpty {
+            if let index = items.firstIndex(where: { ($0["id"] as? String) == after }) {
+                items = Array(items[items.index(after: index)...])
+            } else {
+                items = []
+            }
+        }
+        if let before = parameters["before"]?.trimmingCharacters(in: .whitespacesAndNewlines), !before.isEmpty {
+            if let index = items.firstIndex(where: { ($0["id"] as? String) == before }) {
+                items = Array(items[..<index])
+            } else {
+                items = []
+            }
+        }
+
+        let hasMore = items.count > limit
+        let page = Array(items.prefix(limit))
+        let object: [String: Any] = [
+            "object": "list",
+            "data": page,
+            "first_id": page.first?["id"] as? String ?? NSNull(),
+            "last_id": page.last?["id"] as? String ?? NSNull(),
+            "has_more": hasMore
+        ]
+        return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private func queryParameters(_ query: String?) -> [String: String] {
+        guard let query, !query.isEmpty else { return [:] }
+        var components = URLComponents()
+        components.percentEncodedQuery = query
+        var values: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            values[item.name] = item.value ?? ""
+        }
+        return values
     }
 
     private func sessionAffinity(_ request: HTTPRequest) -> String? {

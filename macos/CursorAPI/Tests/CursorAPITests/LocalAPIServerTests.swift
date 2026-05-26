@@ -614,6 +614,58 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(data[1]["output"] as? String, "/tmp/project")
     }
 
+    func testResponsesInputItemsSupportCursorPagination() async throws {
+        let port = try unusedTCPPort()
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let created = try await postResponse(port: port, body: #"""
+        {
+          "model":"composer-2.5",
+          "input":[
+            "first",
+            "second",
+            "third"
+          ]
+        }
+        """#)
+        let responseID = try XCTUnwrap(created["id"] as? String)
+
+        let (firstStatus, firstPage) = try await getResponseInputItems(port: port, responseID: responseID, query: "limit=1")
+        XCTAssertEqual(firstStatus, 200)
+        XCTAssertEqual(firstPage?["first_id"] as? String, "item_0")
+        XCTAssertEqual(firstPage?["last_id"] as? String, "item_0")
+        XCTAssertEqual(firstPage?["has_more"] as? Bool, true)
+        let firstData = try XCTUnwrap(firstPage?["data"] as? [[String: Any]])
+        XCTAssertEqual(firstData.map { $0["id"] as? String }, ["item_0"])
+
+        let (afterStatus, afterPage) = try await getResponseInputItems(port: port, responseID: responseID, query: "after=item_0&limit=1")
+        XCTAssertEqual(afterStatus, 200)
+        XCTAssertEqual(afterPage?["first_id"] as? String, "item_1")
+        XCTAssertEqual(afterPage?["last_id"] as? String, "item_1")
+        XCTAssertEqual(afterPage?["has_more"] as? Bool, true)
+        let afterData = try XCTUnwrap(afterPage?["data"] as? [[String: Any]])
+        XCTAssertEqual(afterData.map { $0["id"] as? String }, ["item_1"])
+
+        let (descStatus, descPage) = try await getResponseInputItems(port: port, responseID: responseID, query: "order=desc&limit=2")
+        XCTAssertEqual(descStatus, 200)
+        XCTAssertEqual(descPage?["first_id"] as? String, "item_2")
+        XCTAssertEqual(descPage?["last_id"] as? String, "item_1")
+        XCTAssertEqual(descPage?["has_more"] as? Bool, true)
+        let descData = try XCTUnwrap(descPage?["data"] as? [[String: Any]])
+        XCTAssertEqual(descData.map { $0["id"] as? String }, ["item_2", "item_1"])
+
+        let (beforeStatus, beforePage) = try await getResponseInputItems(port: port, responseID: responseID, query: "before=item_2")
+        XCTAssertEqual(beforeStatus, 200)
+        XCTAssertEqual(beforePage?["first_id"] as? String, "item_0")
+        XCTAssertEqual(beforePage?["last_id"] as? String, "item_1")
+        XCTAssertEqual(beforePage?["has_more"] as? Bool, false)
+        let beforeData = try XCTUnwrap(beforePage?["data"] as? [[String: Any]])
+        XCTAssertEqual(beforeData.map { $0["id"] as? String }, ["item_0", "item_1"])
+    }
+
     func testResponsesStoreFalseDoesNotPersistForRetrieval() async throws {
         let port = try unusedTCPPort()
         let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: MockHarness())
@@ -1354,8 +1406,9 @@ private extension LocalAPIServerTests {
         return (status, object)
     }
 
-    func getResponseInputItems(port: UInt16, responseID: String) async throws -> (Int, [String: Any]?) {
-        let url = URL(string: "http://127.0.0.1:\(port)/v1/responses/\(responseID)/input_items")!
+    func getResponseInputItems(port: UInt16, responseID: String, query: String? = nil) async throws -> (Int, [String: Any]?) {
+        let querySuffix = query.map { "?\($0)" } ?? ""
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/responses/\(responseID)/input_items\(querySuffix)")!
         let (data, response) = try await URLSession.shared.data(from: url)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
