@@ -983,13 +983,26 @@ public enum OpenAICompatibility {
                 transcript.append(json)
             }
         }
-        if let choice = toolChoice as? [String: Any],
-           let function = choice["function"] as? [String: Any],
-           let name = function["name"] as? String {
+        if let name = toolChoiceFunctionName(toolChoice) {
             transcript.append("Use the \(name) tool if you call a tool.")
         } else if (toolChoice as? String) == "required" {
             transcript.append("You must call at least one tool.")
         }
+    }
+
+    private static func toolChoiceFunctionName(_ toolChoice: Any?) -> String? {
+        guard let choice = toolChoice as? [String: Any] else {
+            return nil
+        }
+        if let function = choice["function"] as? [String: Any],
+           let name = stringValue(function["name"]) {
+            return name
+        }
+        if stringValue(choice["type"]) == "function",
+           let name = stringValue(choice["name"]) {
+            return name
+        }
+        return nil
     }
 
     private static func appendOptions(_ transcript: inout [String], _ raw: [String: Any]) {

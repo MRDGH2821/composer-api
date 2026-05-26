@@ -1336,6 +1336,60 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue(prepared.prompt.contains("/tmp/project"))
     }
 
+    func testResponsesToolChoiceDirectFunctionShapeAddsPromptHint() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model": "composer-2.5",
+          "tool_choice": { "type": "function", "name": "shell" },
+          "tools": [
+            {
+              "type": "function",
+              "name": "shell",
+              "description": "Run a shell command",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "command": { "type": "string" }
+                }
+              }
+            }
+          ],
+          "input": "Run pwd with the shell tool."
+        }
+        """#.utf8))
+
+        XCTAssertEqual(prepared.tools.map(\.name), ["shell"])
+        XCTAssertTrue(prepared.prompt.contains("Use the shell tool if you call a tool."))
+    }
+
+    func testResponsesToolChoiceNestedFunctionShapeAddsPromptHint() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model": "composer-2.5",
+          "tool_choice": { "type": "function", "function": { "name": "shell" } },
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "shell",
+                "description": "Run a shell command",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "command": { "type": "string" }
+                  }
+                }
+              }
+            }
+          ],
+          "input": "Run pwd with the shell tool."
+        }
+        """#.utf8))
+
+        XCTAssertEqual(prepared.tools.map(\.name), ["shell"])
+        XCTAssertTrue(prepared.prompt.contains("Use the shell tool if you call a tool."))
+    }
+
     func testResponsesEndpointReturnsFunctionCallOutputItems() async throws {
         let port = try unusedTCPPort()
         let toolCall = CursorToolCall(name: "shell", arguments: ["command": .string("pwd")])
