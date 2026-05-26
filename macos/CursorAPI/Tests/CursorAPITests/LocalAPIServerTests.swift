@@ -188,10 +188,12 @@ final class LocalAPIServerTests: XCTestCase {
             XCTAssertEqual(endpoints["chat_completions"], "/v1/chat/completions", path)
             XCTAssertEqual(endpoints["responses"], "/v1/responses", path)
             XCTAssertEqual(endpoints["response_input_tokens"], "POST /v1/responses/input_tokens", path)
+            XCTAssertEqual(endpoints["compact_response"], "POST /v1/responses/compact", path)
             XCTAssertEqual(endpoints["delete_response"], "DELETE /v1/responses/{response_id}", path)
             XCTAssertEqual(endpoints["cancel_response"], "POST /v1/responses/{response_id}/cancel", path)
             XCTAssertEqual(features["stateful_responses"], true, path)
             XCTAssertEqual(features["response_input_tokens"], true, path)
+            XCTAssertEqual(features["response_compaction"], true, path)
             XCTAssertEqual(features["response_deletion"], true, path)
             XCTAssertEqual(features["response_cancellation"], false, path)
             XCTAssertEqual(features["tool_calls"], true, path)
@@ -824,6 +826,51 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["object"] as? String, "response.input_tokens")
         XCTAssertGreaterThan((object["input_tokens"] as? NSNumber)?.intValue ?? 0, 0)
         XCTAssertEqual(models, [])
+    }
+
+    func testResponsesCompactEndpointReturnsReusableCompactionItem() async throws {
+        let port = try unusedTCPPort()
+        let recorder = PreparedRequestRecorder()
+        let harness = MockHarness(text: "The app is local, uses Composer, and still needs packaging verification.", recorder: recorder)
+        let server = LocalAPIServer(settingsProvider: { CursorAPISettings(port: port) }, harness: harness)
+        try server.start(port: port)
+        defer { server.stop() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        var compactRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/responses/compact")!)
+        compactRequest.httpMethod = "POST"
+        compactRequest.httpBody = Data("""
+        {
+          "model": "composer-2.5",
+          "input": [
+            {"role": "user", "content": "Build a local app."},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Implemented local API."}]}
+          ]
+        }
+        """.utf8)
+        compactRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (compactData, compactResponse) = try await URLSession.shared.data(for: compactRequest)
+        let compactObject = try XCTUnwrap(JSONSerialization.jsonObject(with: compactData) as? [String: Any])
+        let compactOutput = try XCTUnwrap(compactObject["output"] as? [[String: Any]])
+        let compaction = try XCTUnwrap(compactOutput.first)
+
+        XCTAssertEqual((compactResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(compactObject["object"] as? String, "response.compaction")
+        XCTAssertEqual(compaction["type"] as? String, "compaction")
+        XCTAssertEqual(compaction["encrypted_content"] as? String, "The app is local, uses Composer, and still needs packaging verification.")
+
+        let continueBody = try JSONSerialization.data(withJSONObject: [
+            "model": "composer-2.5",
+            "input": compactOutput
+        ])
+        let continueResponse = try await postResponse(port: port, body: String(data: continueBody, encoding: .utf8) ?? "{}")
+        let prompts = await recorder.prompts()
+
+        XCTAssertEqual(continueResponse["object"] as? String, "response")
+        XCTAssertEqual(prompts.count, 2)
+        XCTAssertTrue(prompts[0].contains("CONVERSATION TO COMPACT"))
+        XCTAssertTrue(prompts[0].contains("Build a local app."))
+        XCTAssertTrue(prompts[1].contains("COMPACTED CONVERSATION SUMMARY: The app is local, uses Composer, and still needs packaging verification."))
     }
 
     func testResponsesCancelUnknownResponseReturns404() async throws {

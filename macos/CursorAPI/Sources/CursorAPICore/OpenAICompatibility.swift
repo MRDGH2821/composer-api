@@ -151,6 +151,43 @@ public enum OpenAICompatibility {
         try prepareResponsesRequest(body, rememberedToolCalls: [:])
     }
 
+    public static func prepareResponseCompactionRequest(_ body: Data) throws -> PreparedChatRequest {
+        let raw = try jsonObject(body)
+        let model = try ComposerModels.resolvedModelID(for: raw["model"] as? String)
+        let instructions = (raw["instructions"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var transcript = [
+            "You are compacting a long-running local Responses API conversation.",
+            "Return a concise continuation summary that preserves user goals, decisions, constraints, important file paths, pending tasks, tool results, and any unresolved errors.",
+            "Do not add new actions or answer the original request; only summarize the conversation state for a future model turn."
+        ]
+        if let instructions, !instructions.isEmpty {
+            transcript.append("")
+            transcript.append("COMPACTION INSTRUCTIONS:")
+            transcript.append(instructions)
+        }
+        transcript.append("")
+        transcript.append("CONVERSATION TO COMPACT:")
+        var rememberedToolCalls: [String: ResponseToolCallMemory] = [:]
+        if !appendResponsesInput(raw["input"], to: &transcript, remembered: &rememberedToolCalls) {
+            transcript.append("[empty]")
+        }
+        appendOptions(&transcript, raw)
+        let prompt = transcript.joined(separator: "\n")
+        return PreparedChatRequest(
+            model: model,
+            cursorModelID: model,
+            prompt: prompt,
+            stream: false,
+            promptCharacters: prompt.count,
+            tools: [],
+            sessionKey: nil,
+            requestedSessionKey: responseSessionHint(raw),
+            previousResponseID: nil,
+            storeResponse: false,
+            responseInputItems: normalizedResponseInputItems(raw["input"])
+        )
+    }
+
     static func prepareResponsesRequest(_ body: Data, rememberedToolCalls: [String: ResponseToolCallMemory]) throws -> PreparedChatRequest {
         let raw = try jsonObject(body)
         let model = try ComposerModels.resolvedModelID(for: raw["model"] as? String)
@@ -229,6 +266,31 @@ public enum OpenAICompatibility {
         return [
             "object": "response.input_tokens",
             "input_tokens": inputTokenEstimate(characters: prepared.promptCharacters)
+        ]
+    }
+
+    public static func responseCompactionObject(
+        id: String,
+        created: Int,
+        prepared: PreparedChatRequest,
+        output: CursorSDKOutput
+    ) -> [String: Any] {
+        let compactionID = "cmp_\(id.dropFirst(5))"
+        let summary = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "id": id,
+            "object": "response.compaction",
+            "created_at": created,
+            "output": [
+                [
+                    "id": compactionID,
+                    "type": "compaction",
+                    "encrypted_content": summary.isEmpty ? "[empty conversation summary]" : summary
+                ]
+            ],
+            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count),
+            "cursor_agent_id": output.agentID,
+            "cursor_run_id": output.runID
         ]
     }
 
@@ -790,6 +852,14 @@ public enum OpenAICompatibility {
                         .joined(separator: " ")
                     transcript.append("FUNCTION CALL OUTPUT\(label.isEmpty ? "" : " (\(label))"): \(output.isEmpty ? "[empty]" : output)")
                     transcript.append("LOCAL TOOL RESULT: \(toolResultFeedback(toolCallID: callID, toolName: toolName, text: output, remembered: remembered))")
+                    continue
+                }
+                if type == "compaction" {
+                    appended = true
+                    let content = stringValue(item["encrypted_content"])
+                        ?? stringValue(item["content"])
+                        ?? responseInputText(item["summary"])
+                    transcript.append("COMPACTED CONVERSATION SUMMARY: \(content.isEmpty ? "[empty]" : content)")
                     continue
                 }
                 let role = (item["role"] as? String) ?? (type == "message" ? "assistant" : "user")
