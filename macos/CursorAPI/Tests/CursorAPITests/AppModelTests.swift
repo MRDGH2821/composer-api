@@ -3,7 +3,7 @@ import XCTest
 import CursorAPICore
 
 final class AppModelTests: XCTestCase {
-    func testInstallAllTitleUsesUnlockActionWhenSavedKeyIsLocked() {
+    func testInstallAllTitleDoesNotRequireUnlockWhenSavedKeyIsLocked() {
         let statuses = [
             AgentIntegrationStatus(
                 id: .opencode,
@@ -19,7 +19,7 @@ final class AppModelTests: XCTestCase {
                 isRunning: true,
                 needsKeychainPermission: true
             ),
-            "Unlock & Update All"
+            "Update All"
         )
     }
 
@@ -63,7 +63,7 @@ final class AppModelTests: XCTestCase {
         )
     }
 
-    func testIntegrationActionTitleUsesUnlockActionWhenSavedKeyIsLocked() {
+    func testIntegrationActionTitleDoesNotRequireUnlockWhenSavedKeyIsLocked() {
         let status = AgentIntegrationStatus(
             id: .opencode,
             installed: false,
@@ -77,7 +77,7 @@ final class AppModelTests: XCTestCase {
                 isRunning: true,
                 needsKeychainPermission: true
             ),
-            "Unlock & Update"
+            "Update"
         )
     }
 

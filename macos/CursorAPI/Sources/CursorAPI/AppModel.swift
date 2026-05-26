@@ -124,9 +124,6 @@ final class CursorAPIAppModel: ObservableObject {
             return "Installed"
         }
         let action = pending.contains(where: \.needsUpdate) ? "Update All" : "Install All"
-        if needsKeychainPermission {
-            return "Unlock & \(action)"
-        }
         return isRunning ? action : "Start & \(action)"
     }
 
@@ -146,9 +143,6 @@ final class CursorAPIAppModel: ObservableObject {
         if status.installed || !status.canInstall {
             return status.actionTitle
         }
-        if needsKeychainPermission {
-            return "Unlock & \(status.actionTitle)"
-        }
         return isRunning ? status.actionTitle : "Start & \(status.actionTitle)"
     }
 
@@ -164,7 +158,7 @@ final class CursorAPIAppModel: ObservableObject {
             return "This build is missing bundled Composer transport, so agent setup is disabled."
         }
         if needsKeychainPermission {
-            return "Installing configs will ask macOS to unlock the saved key first."
+            return "Configs can be updated now; unlock the saved key before agents make Composer requests."
         }
         if !isRunning {
             return "Installing configs starts the local API first so generated URLs match the active port."
@@ -394,10 +388,10 @@ final class CursorAPIAppModel: ObservableObject {
             lastError = "This app build is missing bundled Composer transport."
             return false
         }
-        if !isRunning || needsKeychainPermission {
-            startServer(allowKeychainPrompt: true, resolveSavedKey: true)
+        if !isRunning {
+            startServer(allowKeychainPrompt: false, resolveSavedKey: false)
         }
-        return isRunning && !needsKeychainPermission
+        return isRunning
     }
 
     private func applyLaunchAtLogin() -> String? {
