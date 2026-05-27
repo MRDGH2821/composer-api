@@ -6952,6 +6952,79 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(input["path"] as? String, "README.md")
     }
 
+    func testChatToolCallsMapSDKMCPClientRouteToMCPWrapperPayload() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"use mcp wrapper"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"call_mcp_tool",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "serverName":{"type":"string"},
+                    "toolName":{"type":"string"},
+                    "input":{
+                      "type":"object",
+                      "properties":{
+                        "owner":{"type":"string"},
+                        "repo":{"type":"string"},
+                        "title":{"type":"string"},
+                        "body":{"type":"string"}
+                      },
+                      "required":["owner","repo","title","body"],
+                      "additionalProperties":false
+                    }
+                  },
+                  "required":["serverName","toolName","input"],
+                  "additionalProperties":false
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("client"),
+            "toolName": .string("call_mcp_tool"),
+            "args": .object([
+                "serverName": .string("github"),
+                "toolName": .string("create_issue"),
+                "input": .object([
+                    "owner": .string("braid"),
+                    "repo": .string("api-for-cursor"),
+                    "title": .string("Smoke"),
+                    "body": .string("OK")
+                ])
+            ])
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let generated = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(generated.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let input = try XCTUnwrap(arguments["input"] as? [String: Any])
+
+        XCTAssertEqual(function["name"] as? String, "call_mcp_tool")
+        XCTAssertEqual(arguments["serverName"] as? String, "github")
+        XCTAssertEqual(arguments["toolName"] as? String, "create_issue")
+        XCTAssertEqual(input["owner"] as? String, "braid")
+        XCTAssertEqual(input["repo"] as? String, "api-for-cursor")
+        XCTAssertEqual(input["title"] as? String, "Smoke")
+        XCTAssertEqual(input["body"] as? String, "OK")
+    }
+
     func testChatToolCallsDoNotEmitSchemaInvalidSpecificMCPToolCalls() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

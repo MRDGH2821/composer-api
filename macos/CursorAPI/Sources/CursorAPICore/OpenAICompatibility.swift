@@ -2249,6 +2249,20 @@ public enum OpenAICompatibility {
             return finalizedToolArguments(listAsGlobArguments(arguments, tool: tool, context: context), source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
+        if canonical == "mcp", isMCPWrapperTool(properties: properties) {
+            let payload = mcpPayloadArguments(arguments)
+            if firstArgument(in: payload, keys: mcpProviderAliases()) != nil,
+               firstArgument(in: payload, keys: mcpToolNameAliases()) != nil {
+                return finalizedToolArguments(
+                    normalizedSpecificMCPPayloadArguments(payload, tool: tool, context: context),
+                    source: payload,
+                    sdkToolName: mcpNestedSDKToolName(payload, fallback: sdkToolName),
+                    tool: tool,
+                    context: context
+                )
+            }
+        }
+
         if canonical == "mcp", selectedCanonical != "mcp" {
             let payload = mcpPayloadArguments(arguments)
             return finalizedToolArguments(

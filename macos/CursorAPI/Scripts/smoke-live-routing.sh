@@ -194,6 +194,29 @@ process.stdin.on("end", () => {
 '
 }
 
+extract_response_mcp_wrapper_summary() {
+  "$JS_RUNTIME" -e '
+let body = "";
+process.stdin.on("data", (chunk) => body += chunk);
+process.stdin.on("end", () => {
+  const json = JSON.parse(body);
+  const call = (json.output || []).find((item) => item && item.type === "function_call");
+  if (!call) process.exit(2);
+  const args = typeof call.arguments === "string" ? JSON.parse(call.arguments || "{}") : (call.arguments || {});
+  const input = args.input || {};
+  process.stdout.write([
+    call.name || "",
+    args.serverName || "",
+    args.toolName || "",
+    input.owner || "",
+    input.repo || "",
+    input.title || "",
+    input.body || ""
+  ].join("\n"));
+});
+'
+}
+
 chat_body='{"model":"composer-2.5-fast","messages":[{"role":"user","content":"Reply exactly: hello"}],"stream":false}'
 chat_content="$(post_json "/chat/completions" "$chat_body" | extract_chat_content)"
 [ "$chat_content" = "hello" ] || fail "chat completions returned '$chat_content', expected hello"
@@ -211,6 +234,12 @@ command_enum_responses_summary="$(post_json "/responses" "$command_enum_response
 expected_command_enum_responses_summary=$'workspace_file\ncreate_file\nsrc/live-command-enum.txt\nlive command enum ok'
 [ "$command_enum_responses_summary" = "$expected_command_enum_responses_summary" ] \
   || fail "Responses API command-enum tool mapping returned unexpected summary: $command_enum_responses_summary"
+
+mcp_wrapper_responses_body='{"model":"composer-2.5-fast","input":"Use call_mcp_tool to call server github tool create_issue with owner octo, repo hello, title Smoke, and body OK.","tool_choice":{"type":"function","name":"call_mcp_tool"},"tools":[{"type":"function","name":"call_mcp_tool","parameters":{"type":"object","properties":{"serverName":{"type":"string"},"toolName":{"type":"string"},"input":{"type":"object","properties":{"owner":{"type":"string"},"repo":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["owner","repo","title","body"],"additionalProperties":false}},"required":["serverName","toolName","input"],"additionalProperties":false}}]}'
+mcp_wrapper_responses_summary="$(post_json "/responses" "$mcp_wrapper_responses_body" | extract_response_mcp_wrapper_summary)"
+expected_mcp_wrapper_responses_summary=$'call_mcp_tool\ngithub\ncreate_issue\nocto\nhello\nSmoke\nOK'
+[ "$mcp_wrapper_responses_summary" = "$expected_mcp_wrapper_responses_summary" ] \
+  || fail "Responses API MCP wrapper mapping returned unexpected summary: $mcp_wrapper_responses_summary"
 
 bridge_process_count() {
   ps ax -o command= \
