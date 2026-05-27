@@ -899,6 +899,83 @@ describe("Worker", () => {
     });
   });
 
+  it("returns Responses function calls when tools are provided", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          input: "Schema transform",
+          tools: [
+            {
+              type: "function",
+              name: "glob",
+              parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+            }
+          ]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { object: string; output: Array<Record<string, unknown>> };
+    expect(body.object).toBe("response");
+    expect(body.output.find((item) => item.type === "function_call")).toMatchObject({
+      type: "function_call",
+      name: "glob",
+      arguments: "{\"pattern\":\"*.ts\"}"
+    });
+  });
+
+  it("streams Responses function_call events when tools are provided", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const { deps } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          stream: true,
+          input: "Schema transform",
+          tools: [
+            {
+              type: "function",
+              name: "glob",
+              parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+            }
+          ]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("event: response.function_call_arguments.delta");
+    expect(body).toContain("event: response.output_item.done");
+    expect(body).toContain("\"name\":\"glob\"");
+    expect(body).toContain("{\\\"pattern\\\":\\\"*.ts\\\"}");
+  });
+
   it("streams SSE chat chunks in legacy cmp_ proxy mode and still writes a request log", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);

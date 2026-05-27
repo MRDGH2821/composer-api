@@ -73,6 +73,17 @@ const AGENT_SYSTEM_DIRECTIVE = [
   "Never tell the user to switch modes."
 ].join("\n");
 
+const RESPONSES_TOOL_SYSTEM_DIRECTIVE = [
+  "You are serving an OpenAI Responses API request through Cursor Composer.",
+  "The client owns local tool execution. When local inspection, shell commands, or file changes are needed, request a function_call and wait for the function_call_output.",
+  "When the input includes function_call_output records, treat them as completed local tool results for your previous function_call requests and continue from those results.",
+  "If the user explicitly names an allowed client tool, use that tool. MCP/server tools exposed as provider_tool names should be requested with SDK mcp using providerIdentifier, toolName, and args.",
+  "For general file creation when no specific client tool is requested, prefer SDK shell when a shell client tool is available; otherwise request write calls with both path and fileText.",
+  "Do not claim that you created, edited, inspected, or ran anything locally unless you emitted a function_call and received a function_call_output confirming it.",
+  "When starting a dev server or other long-running watcher, start it in the background with output redirected and return immediately.",
+  "Do not say that agent mode or tools are unavailable."
+].join("\n");
+
 const AGENT_MODE_PRIMER = [
   "USER: Please switch to agent mode.",
   'ASSISTANT TOOL_CALLS: [{"id":"call_proxy_switch_mode","type":"function","function":{"name":"switch_mode","arguments":"{\\"mode\\":\\"agent\\"}"}}]',
@@ -203,15 +214,18 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
 export function prepareResponsesRequest(body: unknown, cursorModel: { id: string } | undefined): PreparedRequest {
   const record = expectRecord(body, "body");
   validateCommonUnsupported(record);
-  if (Array.isArray(record.tools) && record.tools.length > 0) {
-    throw new HttpError("OpenAI Responses tools are not supported by this Cursor adapter.", 400, "unsupported_parameter", "tools");
-  }
   if (record.background === true) {
     throw new HttpError("background responses are not supported.", 400, "unsupported_parameter", "background");
   }
 
+  const tools = record.tool_choice === "none" ? [] : parseChatTools(record.tools);
   const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : "composer-2.5";
-  const transcript: string[] = [SYSTEM_DIRECTIVE];
+  const latestUserText = latestUserTextFromResponseInput(record.input);
+  const workspaceMutationRequired = tools.length > 0 && hasResponseWorkspaceMutationIntent(record.input);
+  const workspaceMutationDone = workspaceMutationRequired && hasResponseWorkspaceMutationToolCall(record.input);
+  const transcript: string[] = [tools.length ? RESPONSES_TOOL_SYSTEM_DIRECTIVE : SYSTEM_DIRECTIVE];
+  appendResponsesToolInventory(transcript, tools, record.tool_choice);
+  appendResponsesWorkspaceMutationRequirement(transcript, workspaceMutationRequired, workspaceMutationDone, tools, latestUserText);
   const instructions = typeof record.instructions === "string" ? record.instructions.trim() : "";
   if (instructions) transcript.push("", `INSTRUCTIONS:\n${instructions}`);
   transcript.push("", "INPUT:");
@@ -222,7 +236,7 @@ export function prepareResponsesRequest(body: unknown, cursorModel: { id: string
   return {
     model,
     cursorModel,
-    prompt: { text: prompt, mode: "ask", ...(images.length ? { images } : {}) },
+    prompt: { text: prompt, mode: tools.length ? "agent" : "ask", ...(images.length ? { images } : {}) },
     stream: record.stream === true,
     includeUsage: includeStreamUsage(record),
     promptChars: prompt.length,
@@ -231,9 +245,10 @@ export function prepareResponsesRequest(body: unknown, cursorModel: { id: string
       max_output_tokens: integerOrNull(record.max_output_tokens),
       temperature: numberOrNull(record.temperature),
       top_p: numberOrNull(record.top_p),
-      text: isRecord(record.text) ? record.text : { format: { type: "text" } }
+      text: isRecord(record.text) ? record.text : { format: { type: "text" } },
+      ...(tools.length ? { tools: responseToolMetadata(tools), tool_choice: responseToolChoiceMetadata(record.tool_choice) } : {})
     },
-    tools: [],
+    tools,
     requiresLocalTool: false
   };
 }
@@ -336,6 +351,19 @@ export function responseObject(input: {
   };
 }
 
+function responseToolMetadata(tools: OpenAiToolSpec[]): Record<string, unknown>[] {
+  return tools.map((tool) => ({
+    type: "function",
+    name: tool.name,
+    ...(tool.description ? { description: tool.description } : {}),
+    ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
+  }));
+}
+
+function responseToolChoiceMetadata(toolChoice: unknown): unknown {
+  return toolChoice === undefined ? "auto" : toolChoice;
+}
+
 export function chatChunk(input: {
   id: string;
   created: number;
@@ -426,6 +454,13 @@ export function responseCreatedEvents(input: { id: string; created: number; mode
     metadata: {},
     ...input.metadata
   };
+  return [
+    encodeSse({ type: "response.created", response: base }, "response.created"),
+    encodeSse({ type: "response.in_progress", response: base }, "response.in_progress")
+  ];
+}
+
+export function responseTextStartEvents(input: { id: string; outputIndex: number }): Uint8Array[] {
   const item = {
     id: `msg_${input.id.slice(5)}`,
     type: "message",
@@ -434,14 +469,12 @@ export function responseCreatedEvents(input: { id: string; created: number; mode
     content: []
   };
   return [
-    encodeSse({ type: "response.created", response: base }, "response.created"),
-    encodeSse({ type: "response.in_progress", response: base }, "response.in_progress"),
-    encodeSse({ type: "response.output_item.added", output_index: 0, item }, "response.output_item.added"),
+    encodeSse({ type: "response.output_item.added", output_index: input.outputIndex, item }, "response.output_item.added"),
     encodeSse(
       {
         type: "response.content_part.added",
         item_id: item.id,
-        output_index: 0,
+        output_index: input.outputIndex,
         content_index: 0,
         part: { type: "output_text", text: "", annotations: [] }
       },
@@ -450,17 +483,51 @@ export function responseCreatedEvents(input: { id: string; created: number; mode
   ];
 }
 
-export function responseDeltaEvent(input: { id: string; delta: string }): Uint8Array {
+export function responseDeltaEvent(input: { id: string; delta: string; outputIndex?: number }): Uint8Array {
   return encodeSse(
     {
       type: "response.output_text.delta",
       item_id: `msg_${input.id.slice(5)}`,
-      output_index: 0,
+      output_index: input.outputIndex ?? 0,
       content_index: 0,
       delta: input.delta
     },
     "response.output_text.delta"
   );
+}
+
+export function responseToolCallEvents(input: { id: string; toolCall: OpenAiToolCall; outputIndex: number }): Uint8Array[] {
+  const item = {
+    id: `fc_${input.id.slice(5)}_${input.outputIndex}`,
+    type: "function_call",
+    status: "in_progress",
+    call_id: input.toolCall.id,
+    name: input.toolCall.function.name,
+    arguments: ""
+  };
+  const doneItem = { ...item, status: "completed", arguments: input.toolCall.function.arguments };
+  return [
+    encodeSse({ type: "response.output_item.added", output_index: input.outputIndex, item }, "response.output_item.added"),
+    encodeSse(
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: item.id,
+        output_index: input.outputIndex,
+        delta: input.toolCall.function.arguments
+      },
+      "response.function_call_arguments.delta"
+    ),
+    encodeSse(
+      {
+        type: "response.function_call_arguments.done",
+        item_id: item.id,
+        output_index: input.outputIndex,
+        arguments: input.toolCall.function.arguments
+      },
+      "response.function_call_arguments.done"
+    ),
+    encodeSse({ type: "response.output_item.done", output_index: input.outputIndex, item: doneItem }, "response.output_item.done")
+  ];
 }
 
 export function responseDoneEvents(input: {
@@ -471,20 +538,25 @@ export function responseDoneEvents(input: {
   toolCalls?: OpenAiToolCall[];
   promptChars: number;
   metadata?: Record<string, unknown>;
+  textStarted?: boolean;
+  textOutputIndex?: number;
 }): Uint8Array[] {
   const itemId = `msg_${input.id.slice(5)}`;
   const part = { type: "output_text", text: input.text, annotations: [] };
   const item = { id: itemId, type: "message", status: "completed", role: "assistant", content: [part] };
-  return [
+  const textEvents = input.textStarted || !(input.toolCalls ?? []).length ? [
     encodeSse(
-      { type: "response.output_text.done", item_id: itemId, output_index: 0, content_index: 0, text: input.text },
+      { type: "response.output_text.done", item_id: itemId, output_index: input.textOutputIndex ?? 0, content_index: 0, text: input.text },
       "response.output_text.done"
     ),
     encodeSse(
-      { type: "response.content_part.done", item_id: itemId, output_index: 0, content_index: 0, part },
+      { type: "response.content_part.done", item_id: itemId, output_index: input.textOutputIndex ?? 0, content_index: 0, part },
       "response.content_part.done"
     ),
-    encodeSse({ type: "response.output_item.done", output_index: 0, item }, "response.output_item.done"),
+    encodeSse({ type: "response.output_item.done", output_index: input.textOutputIndex ?? 0, item }, "response.output_item.done")
+  ] : [];
+  return [
+    ...textEvents,
     encodeSse(
       { type: "response.completed", response: responseObject(input) },
       "response.completed"
@@ -568,7 +640,7 @@ function parseChatTools(value: unknown): OpenAiToolSpec[] {
     if (record.type !== "function") {
       throw new HttpError("Only function tools are supported.", 400, "unsupported_parameter", `tools[${index}].type`);
     }
-    const fn = expectRecord(record.function, `tools[${index}].function`);
+    const fn = isRecord(record.function) ? record.function : record;
     if (typeof fn.name !== "string" || !fn.name.trim()) {
       throw new HttpError("Tool function name is required.", 400, "invalid_request_error", `tools[${index}].function.name`);
     }
@@ -612,6 +684,37 @@ function appendChatTools(transcript: string[], tools: OpenAiToolSpec[], toolChoi
   }
 }
 
+function appendResponsesToolInventory(transcript: string[], tools: OpenAiToolSpec[], toolChoice: unknown) {
+  if (!tools.length) return;
+  transcript.push(
+    "",
+    "LOCAL TOOL INVENTORY:",
+    `Allowed tool names: ${tools.map((tool) => tool.name).join(", ")}`,
+    "Use only the client's local tools for filesystem and shell work.",
+    "For local work, emit SDK built-in tool calls; the harness translates them to the matching client tool names and schemas.",
+    "When the user names a specific allowed client tool, do not substitute a different tool. MCP/server tools exposed as provider_tool names should be requested with SDK mcp.",
+    "If you need a local tool, emit the tool call before prose. Do not write progress text such as \"creating the file\" instead of calling a tool."
+  );
+  if (hasCompatibleTool("shell", tools)) {
+    transcript.push("A shell client tool is available. For general file creation or overwrite requests, prefer an SDK shell call using mkdir -p and a quoted heredoc.");
+  }
+  for (const tool of tools) {
+    transcript.push(
+      JSON.stringify({
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {})
+      })
+    );
+  }
+  const selected = toolChoiceFunctionName(toolChoice);
+  if (selected) {
+    transcript.push(`Use the ${selected} tool if you call a tool.`);
+  } else if (toolChoice === "required") {
+    transcript.push("You must call at least one tool.");
+  }
+}
+
 function appendSdkToolInventory(transcript: string[], tools: OpenAiToolSpec[], toolChoice: unknown) {
   if (!tools.length) return;
   transcript.push(
@@ -636,6 +739,29 @@ function appendSdkToolInventory(transcript: string[], tools: OpenAiToolSpec[], t
   } else if (toolChoice === "required") {
     transcript.push("You must call at least one tool.");
   }
+}
+
+function appendResponsesWorkspaceMutationRequirement(
+  transcript: string[],
+  required: boolean,
+  done: boolean,
+  tools: OpenAiToolSpec[],
+  latestUserText: string
+) {
+  if (!required) return;
+  const requestedTool = explicitlyRequestedToolName(latestUserText, tools);
+  transcript.push(
+    "",
+    "LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST:",
+    "The latest user request requires local filesystem or shell execution. Emit exactly one SDK tool call next and no prose.",
+    done
+      ? "A file-mutating tool call has already been made. Continue from the returned function_call_output and run verification commands when needed."
+      : requestedTool
+        ? requestedToolHint(requestedTool)
+        : hasCompatibleTool("shell", tools)
+          ? "Use SDK shell now. For creating or overwriting files, run mkdir -p for parent directories and write files with quoted heredocs. After function_call_output returns, continue."
+          : "Use SDK write now with path and fileText. After function_call_output returns, continue."
+  );
 }
 
 function appendWorkspaceMutationRequirement(transcript: string[], required: boolean, done: boolean) {
@@ -701,6 +827,19 @@ function requestedToolHint(toolName: string): string {
     return `Use SDK mcp now with providerIdentifier "${target.provider}", toolName "${target.toolName}", and args matching the ${toolName} schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool.`;
   }
   return `Use the explicitly requested client tool ${toolName} now, with arguments matching its schema. Do not substitute a different tool.`;
+}
+
+function toolChoiceFunctionName(toolChoice: unknown): string | undefined {
+  if (!isRecord(toolChoice) || toolChoice.type !== "function") return undefined;
+  if (typeof toolChoice.name === "string" && toolChoice.name.trim()) return toolChoice.name.trim();
+  if (isRecord(toolChoice.function) && typeof toolChoice.function.name === "string" && toolChoice.function.name.trim()) {
+    return toolChoice.function.name.trim();
+  }
+  return undefined;
+}
+
+function hasCompatibleTool(sdkToolName: string, tools: OpenAiToolSpec[]): boolean {
+  return tools.some((tool) => schemaLooksCompatible(sdkToolName, tool));
 }
 
 function mcpTargetForClientToolName(name: string): { provider: string; toolName: string } | undefined {
@@ -783,6 +922,7 @@ function responseInputToTextAndImages(input: unknown): { text: string; images: C
   if (!Array.isArray(input)) return { text: input === undefined ? "" : JSON.stringify(input), images: [] };
   const lines: string[] = [];
   const images: CursorImage[] = [];
+  const toolCallById = new Map<string, { name: string; args: Record<string, unknown> }>();
   for (const item of input) {
     if (typeof item === "string") {
       lines.push(item);
@@ -794,13 +934,34 @@ function responseInputToTextAndImages(input: unknown): { text: string; images: C
       const content = contentToTextAndImages(record.content, role);
       lines.push(`${role.toUpperCase()}: ${content.text || "[empty]"}`);
       images.push(...content.images);
-    } else if (record.type === "function_call" || record.type === "function_call_output") {
-      lines.push(`${String(record.type).toUpperCase()}: ${JSON.stringify(record)}`);
+    } else if (record.type === "function_call") {
+      const callId = typeof record.call_id === "string" && record.call_id.trim()
+        ? record.call_id.trim()
+        : typeof record.id === "string" && record.id.trim()
+          ? record.id.trim()
+          : `call_response_${toolCallById.size}`;
+      const name = typeof record.name === "string" ? record.name : "unknown";
+      const args = parseToolCallArguments(record.arguments);
+      toolCallById.set(callId, { name, args });
+      lines.push(`ASSISTANT TOOL_CALLS: ${JSON.stringify([{ id: callId, type: "function", function: { name, arguments: JSON.stringify(args) } }])}`);
+    } else if (record.type === "function_call_output") {
+      const callId = typeof record.call_id === "string" ? record.call_id : "";
+      const output = responseToolOutputText(record.output);
+      const remembered = toolCallById.get(callId);
+      const label = [remembered?.name ? `name=${remembered.name}` : "", callId ? `tool_call_id=${callId}` : ""].filter(Boolean).join(" ");
+      lines.push(`TOOL RESULT${label ? ` (${label})` : ""}: ${output || "[empty]"}`);
+      lines.push(`LOCAL TOOL RESULT: ${JSON.stringify(sdkToolResultFeedback(callId, remembered?.name || "", output, toolCallById))}`);
     } else {
       lines.push(JSON.stringify(record));
     }
   }
   return { text: lines.join("\n"), images };
+}
+
+function responseToolOutputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === undefined || output === null) return "";
+  return JSON.stringify(output);
 }
 
 function contentToTextAndImages(content: unknown, role: string): { text: string; images: CursorImage[] } {
@@ -848,10 +1009,28 @@ function hasWorkspaceMutationIntent(messages: unknown[]): boolean {
   return /\b(make|create|build|add|write|generate|scaffold|implement|set up|setup)\b/.test(userText);
 }
 
+function hasResponseWorkspaceMutationIntent(input: unknown): boolean {
+  return /\b(make|create|build|add|write|generate|scaffold|implement|set up|setup)\b/.test(latestUserTextFromResponseInput(input).toLowerCase());
+}
+
 function latestUserTextFromMessages(messages: unknown[]): string {
   for (const message of [...messages].reverse()) {
     if (!isRecord(message) || message.role !== "user") continue;
     return contentToPlainText(message.content);
+  }
+  return "";
+}
+
+function latestUserTextFromResponseInput(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (!Array.isArray(input)) return "";
+  for (const item of [...input].reverse()) {
+    if (typeof item === "string") return item;
+    if (!isRecord(item)) continue;
+    if (item.type === "message" || typeof item.role === "string") {
+      const role = typeof item.role === "string" ? item.role : "user";
+      if (role === "user") return contentToPlainText(item.content);
+    }
   }
   return "";
 }
@@ -866,6 +1045,15 @@ function hasWorkspaceMutationToolCall(messages: unknown[]): boolean {
       const fn = isRecord(toolCall.function) ? toolCall.function : undefined;
       if (typeof fn?.name === "string" && isWorkspaceMutationToolCall(fn.name, fn.arguments)) return true;
     }
+  }
+  return false;
+}
+
+function hasResponseWorkspaceMutationToolCall(input: unknown): boolean {
+  if (!Array.isArray(input)) return false;
+  for (const item of input) {
+    if (!isRecord(item) || item.type !== "function_call" || typeof item.name !== "string") continue;
+    if (isWorkspaceMutationToolCall(item.name, item.arguments)) return true;
   }
   return false;
 }

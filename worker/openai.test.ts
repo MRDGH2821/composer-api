@@ -283,6 +283,50 @@ describe("OpenAI compatibility adapter", () => {
     expect(prepared.prompt.text).toContain("valid JSON object");
   });
 
+  it("accepts Responses function tools and carries function outputs into the prompt", () => {
+    const prepared = prepareResponsesRequest(
+      {
+        model: "composer-2.5",
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "build a todo app in vite 8 and react" }] },
+          { type: "function_call", call_id: "call_1", name: "glob", arguments: "{\"pattern\":\"*\"}" },
+          { type: "function_call_output", call_id: "call_1", output: "[]" }
+        ],
+        tools: [
+          {
+            type: "function",
+            name: "glob",
+            description: "Find files",
+            parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+          }
+        ],
+        tool_choice: "required"
+      },
+      { id: "composer-2.5" }
+    );
+
+    expect(prepared.tools).toEqual([
+      {
+        name: "glob",
+        description: "Find files",
+        parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+      }
+    ]);
+    expect(prepared.prompt.mode).toBe("agent");
+    expect(prepared.prompt.text).toContain("LOCAL TOOL INVENTORY:");
+    expect(prepared.prompt.text).toContain("Allowed tool names: glob");
+    expect(prepared.prompt.text).toContain("LOCAL TOOL RESULT:");
+    expect(prepared.prompt.text).toContain("You must call at least one tool.");
+    expect(prepared.responseMetadata.tools).toEqual([
+      {
+        type: "function",
+        name: "glob",
+        description: "Find files",
+        parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+      }
+    ]);
+  });
+
   it("returns OpenAI-shaped response objects", () => {
     const chat = chatCompletionResponse({
       id: "chatcmpl_test",
