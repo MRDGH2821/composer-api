@@ -2225,7 +2225,7 @@ public enum OpenAICompatibility {
             let glob = normalizedGlobArguments(arguments, context: context)
             if let patternKey = propertyName(matching: globPatternAliases(), in: properties) {
                 let pattern = glob.pattern ?? .string("**/*")
-                output[patternKey] = pattern
+                output[patternKey] = normalizeToolArgumentValue(pattern, property: patternKey, tool: tool, context: context)
             }
             if let searchPath = glob.searchPath,
                shouldIncludeOptionalPath(searchPath),
@@ -2233,7 +2233,7 @@ public enum OpenAICompatibility {
                 output[pathKey] = normalizeToolArgumentValue(searchPath, property: pathKey, tool: tool, context: context)
             } else if let pathKey = propertyName(matching: globPathAliases(), in: properties),
                       isRequired(pathKey, in: required) {
-                output[pathKey] = .string(".")
+                output[pathKey] = normalizeToolArgumentValue(.string("."), property: pathKey, tool: tool, context: context)
             }
             consumed.formUnion(glob.consumed)
         case "ls":
@@ -2415,19 +2415,32 @@ public enum OpenAICompatibility {
            hasType("boolean") {
             return .bool(false)
         }
-        if ["path", "directory", "dir", "root", "basepath", "searchpath"].contains(normalizedProperty),
+        if ["path", "paths", "directory", "directories", "folder", "folders", "dir", "root", "roots", "rootdir", "rootdirs", "basepath", "basepaths", "searchpath", "searchpaths", "targetdirectory", "targetdirectories"].contains(normalizedProperty),
            ["glob", "grep", "ls", "semsearch"].contains(canonical),
            hasType("string") {
             return .string(".")
         }
-        if ["pattern", "glob", "globpattern", "fileglob", "query"].contains(normalizedProperty),
+        if ["pattern", "patterns", "glob", "globs", "globpattern", "globpatterns", "fileglob", "fileglobs", "filepattern", "filepatterns", "includepattern", "includepatterns", "query"].contains(normalizedProperty),
            canonical == "glob",
            hasType("string") {
             return .string("**/*")
         }
-        if (types.contains("array") || object["items"] != nil || object["prefixItems"] != nil),
-           (object["minItems"]?.integerValue ?? 0) <= 0 {
-            return .array([])
+        if types.contains("array") || object["items"] != nil || object["prefixItems"] != nil {
+            let minItems = object["minItems"]?.integerValue ?? 0
+            if minItems <= 0 {
+                return .array([])
+            }
+            if let array = synthesizedRequiredArrayArgument(
+                property: property,
+                schema: object,
+                source: source,
+                sdkToolName: sdkToolName,
+                tool: tool,
+                context: context,
+                depth: depth
+            ), array.count >= minItems {
+                return .array(array)
+            }
         }
         if types.contains("object") || object["properties"] != nil || object["required"] != nil {
             return synthesizedObjectArgument(
@@ -2440,6 +2453,34 @@ public enum OpenAICompatibility {
             )
         }
         return nil
+    }
+
+    private static func synthesizedRequiredArrayArgument(
+        property: String,
+        schema: [String: JSONValue],
+        source: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        context: ToolCallContext?,
+        depth: Int
+    ) -> [JSONValue]? {
+        let minItems = max(1, schema["minItems"]?.integerValue ?? 1)
+        let itemSchema = schema["items"]
+        var itemTool = tool
+        itemTool.parameters = itemSchema
+        guard let item = synthesizedRequiredArgument(
+            property: property,
+            schema: itemSchema,
+            output: [:],
+            source: source,
+            sdkToolName: sdkToolName,
+            tool: itemTool,
+            context: context,
+            depth: depth + 1
+        ) else {
+            return nil
+        }
+        return Array(repeating: item, count: minItems)
     }
 
     private static func synthesizedObjectArgument(
@@ -2758,7 +2799,7 @@ public enum OpenAICompatibility {
         guard !properties.isEmpty else { return arguments }
         var output: [String: JSONValue] = [:]
         if let patternKey = propertyName(matching: globPatternAliases(), in: properties) {
-            output[patternKey] = .string(arguments.isEmpty ? "**/*" : "*")
+            output[patternKey] = normalizeToolArgumentValue(.string(arguments.isEmpty ? "**/*" : "*"), property: patternKey, tool: tool, context: context)
         }
         if let path = firstArgument(in: arguments, keys: globPathAliases())?.value,
            shouldIncludeOptionalPath(path),
@@ -2766,7 +2807,7 @@ public enum OpenAICompatibility {
             output[pathKey] = normalizeToolArgumentValue(path, property: pathKey, tool: tool, context: context)
         } else if let pathKey = propertyName(matching: globPathAliases(), in: properties),
                   isRequired(pathKey, in: requiredParameterNames(tool)) {
-            output[pathKey] = .string(".")
+            output[pathKey] = normalizeToolArgumentValue(.string("."), property: pathKey, tool: tool, context: context)
         }
         return output.isEmpty ? arguments : output
     }
@@ -2903,7 +2944,11 @@ public enum OpenAICompatibility {
             return value
         }
         if toolPropertyPrefersArray(tool: tool, property: property) {
-            let values = arrayArgumentValue(value) ?? [value]
+            var values = arrayArgumentValue(value) ?? [value]
+            let minimum = toolPropertyArrayMinimum(tool: tool, property: property)
+            if values.count == 1, values.count < minimum {
+                values = Array(repeating: values[0], count: minimum)
+            }
             return .array(values.map { normalizeArrayItemArgumentValue($0, property: property, tool: tool, context: context) })
         }
         if case .number(let number) = value,
@@ -2941,6 +2986,13 @@ public enum OpenAICompatibility {
             return false
         }
         return schemaAllowsJSONType(schema, type: "null")
+    }
+
+    private static func toolPropertyArrayMinimum(tool: OpenAIToolSpec, property: String) -> Int {
+        guard case .object(let schema)? = parameterPropertySchema(property, tool: tool) else {
+            return 0
+        }
+        return max(0, schema["minItems"]?.integerValue ?? 0)
     }
 
     private static func normalizeTimeoutForSecondsTool(_ value: Double, sourceProperty: String?) -> Double {
@@ -4086,13 +4138,13 @@ public enum OpenAICompatibility {
             return newTextAliases() + fileContentAliases()
         case "oldcontents", "oldstring", "oldtext", "searchstring", "find", "findtext":
             return oldTextAliases() + ["text"]
-        case "glob", "globpattern", "fileglob", "filepattern", "includepattern", "include":
+        case "glob", "globs", "globpattern", "globpatterns", "fileglob", "fileglobs", "filepattern", "filepatterns", "includepattern", "includepatterns", "include", "includes":
             return globPatternAliases()
         case "literal", "fixedstring":
             return ["literal", "fixedString", "fixed_string"]
         case "pattern", "query", "regex", "search":
             return ["pattern", "query", "regex", "search", "prompt"]
-        case "targetdirectory", "targeting", "searchpath", "basepath", "root", "rootdir", "directory", "dir", "cwd", "workingdirectory", "workdir":
+        case "targetdirectory", "targetdirectories", "targeting", "searchpath", "searchpaths", "basepath", "basepaths", "root", "roots", "rootdir", "rootdirs", "directory", "directories", "folder", "folders", "dir", "cwd", "workingdirectory", "workdir":
             return globPathAliases() + pathPropertyAliases() + ["pattern"]
         case "prompt", "instructions":
             return ["prompt", "description", "instructions", "query"]
@@ -4108,10 +4160,10 @@ public enum OpenAICompatibility {
     private static func toolSpecificArgumentAliases(toolName: String, normalizedKey: String) -> [String] {
         switch canonicalToolName(toolName) {
         case "glob":
-            if ["globpattern", "fileglob", "filepattern", "includepattern", "glob", "include", "pattern", "query"].contains(normalizedKey) {
+            if ["globpattern", "globpatterns", "fileglob", "fileglobs", "filepattern", "filepatterns", "includepattern", "includepatterns", "glob", "globs", "include", "includes", "pattern", "patterns", "query"].contains(normalizedKey) {
                 return globPatternAliases()
             }
-            if ["targeting", "targetdirectory", "searchpath", "basepath", "root", "rootdir", "cwd", "directory", "dir", "path"].contains(normalizedKey) {
+            if ["targeting", "targetdirectory", "targetdirectories", "searchpath", "searchpaths", "basepath", "basepaths", "root", "roots", "rootdir", "rootdirs", "cwd", "directory", "directories", "folder", "folders", "dir", "path", "paths"].contains(normalizedKey) {
                 return globPathAliases()
             }
         case "grep":
@@ -4273,7 +4325,9 @@ public enum OpenAICompatibility {
     private static func globPatternAliases(includeQuery: Bool = true) -> [String] {
         var aliases = [
             "globPattern", "glob_pattern", "fileGlob", "file_glob", "filePattern", "file_pattern",
-            "includePattern", "include_pattern", "pathPattern", "path_pattern", "pattern", "glob"
+            "includePattern", "include_pattern", "pathPattern", "path_pattern", "pattern", "glob",
+            "globPatterns", "glob_patterns", "fileGlobs", "file_globs", "filePatterns", "file_patterns",
+            "includePatterns", "include_patterns", "pathPatterns", "path_patterns", "patterns", "globs"
         ]
         if includeQuery {
             aliases.append("query")
@@ -4286,7 +4340,9 @@ public enum OpenAICompatibility {
         [
             "targetDirectory", "target_directory", "targeting", "directory", "dir", "cwd", "workdir",
             "workingDirectory", "working_directory", "path", "root", "rootDir", "root_dir",
-            "basePath", "base_path", "searchPath", "search_path"
+            "basePath", "base_path", "searchPath", "search_path",
+            "targetDirectories", "target_directories", "directories", "folders", "paths", "roots",
+            "rootDirs", "root_dirs", "basePaths", "base_paths", "searchPaths", "search_paths"
         ]
     }
 

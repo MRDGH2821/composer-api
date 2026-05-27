@@ -5094,6 +5094,104 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments[1]["targetDirectories"] as? [String], ["src", "app"])
     }
 
+    func testChatToolCallsMapSDKGlobToPluralArrayClientSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"system","content":"Working directory: /tmp/array-glob"},
+            {"role":"user","content":"find source files"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"discover_files",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "patterns":{"type":"array","items":{"type":"string"},"minItems":1},
+                    "roots":{"type":"array","items":{"type":"string"},"minItems":1},
+                    "description":{"type":"string"}
+                  },
+                  "required":["patterns","roots","description"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "glob", arguments: [
+                "targetDirectory": .string("src/**/*.tsx")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_arrayglob",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "discover_files")
+        XCTAssertEqual(arguments["patterns"] as? [String], ["**/*.tsx"])
+        XCTAssertEqual(arguments["roots"] as? [String], ["/tmp/array-glob/src"])
+        XCTAssertEqual(arguments["description"] as? String, "Find matching files")
+    }
+
+    func testResponsesFunctionCallsPadScalarGlobArgumentsToArrayMinimums() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"find files",
+          "tools":[
+            {
+              "type":"function",
+              "name":"find_files",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "patterns":{"type":"array","items":{"type":"string"},"minItems":2},
+                  "directories":{"type":"array","items":{"type":"string"},"minItems":1}
+                },
+                "required":["patterns","directories"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "glob", arguments: [
+                "globPattern": .string("**/*.jsx"),
+                "targetDirectory": .string("src")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_arrayglob",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let outputItems = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(outputItems.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+
+        XCTAssertEqual(functionCall["name"] as? String, "find_files")
+        XCTAssertEqual(arguments["patterns"] as? [String], ["**/*.jsx", "**/*.jsx"])
+        XCTAssertEqual(arguments["directories"] as? [String], ["src"])
+    }
+
     func testChatToolCallsFallbackToSchemaEnumWhenRequiredModeIsNotOperation() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
