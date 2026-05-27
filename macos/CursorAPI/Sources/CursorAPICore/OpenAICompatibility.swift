@@ -1463,8 +1463,9 @@ public enum OpenAICompatibility {
         let selectedTool = normalizedName(tool.name)
         let selectedCanonical = canonicalToolName(tool.name)
 
-        if selectedTool == "strreplaceeditor", canonical == "write" {
-            return strReplaceEditorArguments(arguments, properties: properties)
+        if selectedTool == "strreplaceeditor",
+           ["write", "read", "edit"].contains(canonical) {
+            return strReplaceEditorArguments(arguments, sdkToolName: sdkToolName, properties: properties)
         }
 
         guard !properties.isEmpty else { return arguments }
@@ -1961,21 +1962,60 @@ public enum OpenAICompatibility {
         return String(data: data, encoding: .utf8) ?? #""""#
     }
 
-    private static func strReplaceEditorArguments(_ arguments: [String: JSONValue], properties: [String]) -> [String: JSONValue] {
-        let fallbackProperties = properties.isEmpty ? ["command", "path", "file_text"] : properties
+    private static func strReplaceEditorArguments(_ arguments: [String: JSONValue], sdkToolName: String, properties: [String]) -> [String: JSONValue] {
+        let fallbackProperties = properties.isEmpty ? ["command", "path", "file_text", "old_str", "new_str", "view_range"] : properties
         var output: [String: JSONValue] = [:]
-        if let commandKey = propertyName(matching: ["command"], in: fallbackProperties) {
-            output[commandKey] = .string("create")
-        }
-        if let path = arguments["path"],
+        if let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["target_file", "targetFile"])?.value,
            let pathKey = propertyName(matching: pathPropertyAliases(), in: fallbackProperties) {
             output[pathKey] = path
         }
-        if let fileText = arguments["fileText"],
-           let contentKey = propertyName(matching: ["file_text", "fileText", "content", "contents", "text"], in: fallbackProperties) {
-            output[contentKey] = fileText
+
+        let commandKey = propertyName(matching: ["command"], in: fallbackProperties)
+        switch canonicalToolName(sdkToolName) {
+        case "read":
+            if let commandKey {
+                output[commandKey] = .string("view")
+            }
+            if let viewRange = viewRange(from: arguments),
+               let viewRangeKey = propertyName(matching: ["view_range", "viewRange", "range"], in: fallbackProperties) {
+                output[viewRangeKey] = viewRange
+            }
+        case "edit":
+            if let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
+               let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace"])?.value {
+                if let commandKey {
+                    output[commandKey] = .string("str_replace")
+                }
+                if let oldKey = propertyName(matching: ["old_str", "oldString", "old_string", "old"], in: fallbackProperties) {
+                    output[oldKey] = oldText
+                }
+                if let newKey = propertyName(matching: ["new_str", "newString", "new_string", "replacement"], in: fallbackProperties) {
+                    output[newKey] = newText
+                }
+                return output.isEmpty ? arguments : output
+            }
+            fallthrough
+        default:
+            if let commandKey {
+                output[commandKey] = .string("create")
+            }
+            if let fileText = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent"])?.value,
+               let contentKey = propertyName(matching: ["file_text", "fileText", "content", "contents", "text"], in: fallbackProperties) {
+                output[contentKey] = fileText
+            }
         }
         return output.isEmpty ? arguments : output
+    }
+
+    private static func viewRange(from arguments: [String: JSONValue]) -> JSONValue? {
+        let offset = firstArgument(in: arguments, keys: ["offset", "start", "startLine", "start_line"])?.value.integerValue
+        let limit = firstArgument(in: arguments, keys: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])?.value.integerValue
+        guard offset != nil || limit != nil else { return nil }
+        let start = max(1, offset ?? 1)
+        guard let limit, limit > 0 else {
+            return .array([.number(Double(start)), .number(-1)])
+        }
+        return .array([.number(Double(start)), .number(Double(start + limit - 1))])
     }
 
     private static func schemaLooksCompatible(sdkToolName: String, tool: OpenAIToolSpec) -> Bool {
@@ -1984,13 +2024,20 @@ public enum OpenAICompatibility {
         func has(_ candidates: [String]) -> Bool {
             propertyName(matching: candidates, in: properties) != nil
         }
-        switch canonicalToolName(sdkToolName) {
+        let canonical = canonicalToolName(sdkToolName)
+        if normalizedName(tool.name) == "strreplaceeditor",
+           !["write", "read", "edit"].contains(canonical) {
+            return false
+        }
+        switch canonical {
         case "shell":
             return has(["command", "cmd", "script"])
         case "write":
             return has(pathPropertyAliases()) && has(["fileText", "file_text", "content", "contents", "text"])
         case "read", "delete":
             return has(pathPropertyAliases())
+        case "edit":
+            return has(pathPropertyAliases()) && has(["oldString", "old_string", "old_str", "old", "search", "newString", "new_string", "new_str", "replacement"])
         case "grep":
             return has(["pattern", "query", "regex"])
         case "glob":

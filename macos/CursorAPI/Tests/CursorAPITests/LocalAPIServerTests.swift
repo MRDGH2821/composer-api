@@ -1977,6 +1977,88 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["path"])
     }
 
+    func testChatToolCallsMapSDKFileOperationsToAnthropicTextEditorSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"update app files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"str_replace_editor",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "command":{"type":"string"},
+                    "path":{"type":"string"},
+                    "file_text":{"type":"string"},
+                    "old_str":{"type":"string"},
+                    "new_str":{"type":"string"},
+                    "view_range":{"type":"array","items":{"type":"integer"}}
+                  },
+                  "required":["command","path"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "write", arguments: [
+                "path": .string("src/App.tsx"),
+                "fileText": .string("export default function App() { return null }")
+            ]),
+            CursorToolCall(name: "read", arguments: [
+                "path": .string("src/App.tsx"),
+                "offset": .number(10),
+                "limit": .number(20)
+            ]),
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "oldString": .string("Hello"),
+                "newString": .string("Hi")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 3)
+
+        let writeFunction = try XCTUnwrap(toolCalls[0]["function"] as? [String: Any])
+        let writeArguments = try decodedArguments(writeFunction)
+        XCTAssertEqual(writeFunction["name"] as? String, "str_replace_editor")
+        XCTAssertEqual(writeArguments["command"] as? String, "create")
+        XCTAssertEqual(writeArguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(writeArguments["file_text"] as? String, "export default function App() { return null }")
+
+        let readFunction = try XCTUnwrap(toolCalls[1]["function"] as? [String: Any])
+        let readArguments = try decodedArguments(readFunction)
+        XCTAssertEqual(readFunction["name"] as? String, "str_replace_editor")
+        XCTAssertEqual(readArguments["command"] as? String, "view")
+        XCTAssertEqual(readArguments["path"] as? String, "src/App.tsx")
+        let viewRange = try XCTUnwrap(readArguments["view_range"] as? [Any])
+        XCTAssertEqual((viewRange[0] as? NSNumber)?.intValue, 10)
+        XCTAssertEqual((viewRange[1] as? NSNumber)?.intValue, 29)
+
+        let editFunction = try XCTUnwrap(toolCalls[2]["function"] as? [String: Any])
+        let editArguments = try decodedArguments(editFunction)
+        XCTAssertEqual(editFunction["name"] as? String, "str_replace_editor")
+        XCTAssertEqual(editArguments["command"] as? String, "str_replace")
+        XCTAssertEqual(editArguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(editArguments["old_str"] as? String, "Hello")
+        XCTAssertEqual(editArguments["new_str"] as? String, "Hi")
+    }
+
     func testChatToolCallsMapSDKCoreToolsToOpenCodeSchemas() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

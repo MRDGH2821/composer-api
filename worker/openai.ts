@@ -1557,6 +1557,7 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
   const schema = toolParameterSchema(tool);
   const emittedCanonical = canonicalToolName(emittedName);
   const selectedCanonical = canonicalToolName(tool?.name || "");
+  const selectedTool = normalizeToolName(tool?.name || "");
   if (emittedCanonical === "mcp" && selectedCanonical === "mcp") {
     return normalizeMCPWrapperArguments(args, schema);
   }
@@ -1564,6 +1565,9 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     ? expandToolArguments(recordArgumentValue(args.args) ?? {})
     : expandToolArguments(args);
   if (!schema.properties.length) return argsToNormalize;
+  if (selectedTool === "strreplaceeditor") {
+    return strReplaceEditorArguments(argsToNormalize, emittedCanonical, tool);
+  }
   if (emittedCanonical !== "shell" && selectedCanonical === "shell") {
     return shellFallbackArguments(argsToNormalize, emittedName, tool);
   }
@@ -1597,7 +1601,11 @@ function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boole
   if (!schema.properties.length) return false;
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const has = (candidates: string[]) => Boolean(firstMatchingProperty(candidates, schema.properties, normalizedProperties));
-  switch (canonicalToolName(emittedName)) {
+  const canonical = canonicalToolName(emittedName);
+  if (normalizeToolName(tool.name) === "strreplaceeditor" && !["write", "read", "edit"].includes(canonical)) {
+    return false;
+  }
+  switch (canonical) {
     case "shell":
       return has(["command", "cmd", "script", "input"]);
     case "write":
@@ -1605,6 +1613,8 @@ function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boole
     case "read":
     case "delete":
       return has(pathCandidates());
+    case "edit":
+      return has(pathCandidates()) && has(["oldString", "old_string", "old_str", "old", "search", "newString", "new_string", "new_str", "replacement"]);
     case "grep":
       return has(["pattern", "query", "regex", "search"]);
     case "glob":
@@ -1786,6 +1796,59 @@ function globArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | und
   const pathKey = firstMatchingProperty(["path", "targetDirectory", "target_directory", "directory", "cwd"], schema.properties, normalizedProperties);
   if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = path;
   return Object.keys(output).length ? output : args;
+}
+
+function strReplaceEditorArguments(
+  args: Record<string, unknown>,
+  emittedCanonical: string,
+  tool: OpenAiToolSpec | undefined
+): Record<string, unknown> {
+  const schema = toolParameterSchema(tool);
+  const properties = schema.properties.length ? schema.properties : ["command", "path", "file_text", "old_str", "new_str", "view_range"];
+  const normalizedProperties = new Map(properties.map((property) => [normalizeToolName(property), property]));
+  const output: Record<string, unknown> = {};
+  const set = (candidates: string[], value: unknown) => {
+    const key = firstMatchingProperty(candidates, properties, normalizedProperties);
+    if (key && value !== undefined) output[key] = value;
+  };
+  const path = firstArg(args, [...pathCandidates(), "target_file", "targetFile"]);
+  set(pathCandidates(), path);
+
+  if (emittedCanonical === "read") {
+    set(["command"], "view");
+    const viewRange = viewRangeFromArgs(args);
+    if (viewRange) set(["view_range", "viewRange", "range"], viewRange);
+    return Object.keys(output).length ? output : args;
+  }
+
+  if (emittedCanonical === "edit") {
+    const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
+    const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace");
+    if (oldText !== undefined && newText !== undefined) {
+      set(["command"], "str_replace");
+      set(["old_str", "oldString", "old_string", "old"], oldText);
+      set(["new_str", "newString", "new_string", "replacement"], newText);
+      return Object.keys(output).length ? output : args;
+    }
+  }
+
+  const fileText = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content", "streamContent");
+  if (fileText !== undefined) {
+    set(["command"], "create");
+    set(["file_text", "fileText", "content", "contents", "text"], fileText);
+    return Object.keys(output).length ? output : args;
+  }
+
+  return Object.keys(output).length ? output : args;
+}
+
+function viewRangeFromArgs(args: Record<string, unknown>): number[] | undefined {
+  const offset = firstNumberArg(args, "offset", "start", "startLine", "start_line");
+  const limit = firstNumberArg(args, "limit", "maxLines", "max_lines", "lineCount", "line_count");
+  if (offset === undefined && limit === undefined) return undefined;
+  const start = Math.max(1, Math.trunc(offset ?? 1));
+  if (limit === undefined || limit <= 0) return [start, -1];
+  return [start, start + Math.trunc(limit) - 1];
 }
 
 function resolveSpecificMCPTool(args: Record<string, unknown>, tools: OpenAiToolSpec[]): OpenAiToolSpec | undefined {

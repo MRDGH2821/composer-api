@@ -837,6 +837,44 @@ describe("OpenAI compatibility adapter", () => {
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "*" });
   });
 
+  it("maps SDK file operations to Anthropic-style text editor schemas", () => {
+    const tools = [
+      {
+        name: "str_replace_editor",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            command: { type: "string" },
+            path: { type: "string" },
+            file_text: { type: "string" },
+            old_str: { type: "string" },
+            new_str: { type: "string" },
+            view_range: { type: "array", items: { type: "integer" } }
+          },
+          required: ["command", "path"]
+        }
+      }
+    ];
+
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools,
+      toolCalls: [
+        { name: "write", arguments: { path: "src/App.tsx", fileText: "export default function App() { return null }" } },
+        { name: "read", arguments: { path: "src/App.tsx", offset: 10, limit: 20 } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "Hello", newString: "Hi" } }
+      ]
+    });
+
+    expect(toolCalls.map((call) => call.function.name)).toEqual(["str_replace_editor", "str_replace_editor", "str_replace_editor"]);
+    expect(toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { command: "create", path: "src/App.tsx", file_text: "export default function App() { return null }" },
+      { command: "view", path: "src/App.tsx", view_range: [10, 29] },
+      { command: "str_replace", path: "src/App.tsx", old_str: "Hello", new_str: "Hi" }
+    ]);
+  });
+
   it("does not emit SDK-native tool names outside the advertised client tools", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",
