@@ -299,6 +299,11 @@ const readline = require("node:readline");
 const tools = ${tools};
 const validateClientMcpToolCall = ${validateClientMcpToolCall.toString()};
 const validateJsonSchemaValue = ${validateJsonSchemaValue.toString()};
+const canonicalJsonSchema = ${canonicalJsonSchema.toString()};
+const schemaHasStructuralKeyword = ${schemaHasStructuralKeyword.toString()};
+const schemaReferenceTarget = ${schemaReferenceTarget.toString()};
+const jsonPointerTarget = ${jsonPointerTarget.toString()};
+const decodeJsonPointerSegment = ${decodeJsonPointerSegment.toString()};
 const schemaTypes = ${schemaTypes.toString()};
 const schemaAllowsNull = ${schemaAllowsNull.toString()};
 const jsonValueMatchesType = ${jsonValueMatchesType.toString()};
@@ -360,13 +365,18 @@ function validateClientMcpToolCall(tools, toolName, input = {}) {
   if (!tool) {
     return `Unknown client MCP forwarding tool: ${toolName}`;
   }
-  const schema = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : {};
+  const schema = canonicalJsonSchema(tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : {});
   const args = input && typeof input === "object" && !Array.isArray(input) ? input : {};
-  return validateJsonSchemaValue(args, schema, toolName);
+  return validateJsonSchemaValue(args, schema, toolName, schema);
 }
 
-function validateJsonSchemaValue(value, schema, path) {
+function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenRefs = new Set()) {
+  schema = canonicalJsonSchema(schema);
+  const root = canonicalJsonSchema(rootSchema || schema);
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return null;
+  const reference = schemaReferenceTarget(schema, root, seenRefs);
+  if (reference) return validateJsonSchemaValue(value, reference.schema, path, root, reference.seenRefs);
+
   if (Object.prototype.hasOwnProperty.call(schema, "const") && !jsonValuesEqual(value, schema.const)) {
     return `Invalid value for ${path}: expected constant ${JSON.stringify(schema.const)}`;
   }
@@ -375,24 +385,25 @@ function validateJsonSchemaValue(value, schema, path) {
   }
 
   const anyOf = Array.isArray(schema.anyOf) ? schema.anyOf : [];
-  if (anyOf.length && !anyOf.some((candidate) => validateJsonSchemaValue(value, candidate, path) === null)) {
+  if (anyOf.length && !anyOf.some((candidate) => validateJsonSchemaValue(value, candidate, path, root, new Set(seenRefs)) === null)) {
     return `Invalid value for ${path}: did not match any allowed schema`;
   }
   const oneOf = Array.isArray(schema.oneOf) ? schema.oneOf : [];
-  if (oneOf.length && !oneOf.some((candidate) => validateJsonSchemaValue(value, candidate, path) === null)) {
+  if (oneOf.length && !oneOf.some((candidate) => validateJsonSchemaValue(value, candidate, path, root, new Set(seenRefs)) === null)) {
     return `Invalid value for ${path}: did not match any allowed schema`;
   }
   const allOf = Array.isArray(schema.allOf) ? schema.allOf : [];
   for (const candidate of allOf) {
-    const error = validateJsonSchemaValue(value, candidate, path);
+    const error = validateJsonSchemaValue(value, candidate, path, root, new Set(seenRefs));
     if (error) return error;
   }
+
+  if (value === null && schemaAllowsNull(schema, root, seenRefs)) return null;
 
   const types = schemaTypes(schema);
   if (types.length && !types.some((type) => jsonValueMatchesType(value, type))) {
     return `Invalid value for ${path}: expected ${types.join(" or ")}`;
   }
-  if (value === null && schemaAllowsNull(schema)) return null;
 
   const objectLike = schema.properties || schema.required || schema.additionalProperties !== undefined || types.includes("object");
   if (objectLike) {
@@ -406,12 +417,12 @@ function validateJsonSchemaValue(value, schema, path) {
     }
     for (const [key, nestedValue] of Object.entries(value)) {
       if (Object.prototype.hasOwnProperty.call(properties, key)) {
-        const error = validateJsonSchemaValue(nestedValue, properties[key], `${path}.${key}`);
+        const error = validateJsonSchemaValue(nestedValue, properties[key], `${path}.${key}`, root, new Set(seenRefs));
         if (error) return error;
       } else if (schema.additionalProperties === false) {
         return `Unexpected argument for ${path}: ${key}`;
       } else if (isRecord(schema.additionalProperties)) {
-        const error = validateJsonSchemaValue(nestedValue, schema.additionalProperties, `${path}.${key}`);
+        const error = validateJsonSchemaValue(nestedValue, schema.additionalProperties, `${path}.${key}`, root, new Set(seenRefs));
         if (error) return error;
       }
     }
@@ -428,7 +439,7 @@ function validateJsonSchemaValue(value, schema, path) {
     }
     const prefixItems = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
     for (let index = 0; index < Math.min(prefixItems.length, value.length); index += 1) {
-      const error = validateJsonSchemaValue(value[index], prefixItems[index], `${path}[${index}]`);
+      const error = validateJsonSchemaValue(value[index], prefixItems[index], `${path}[${index}]`, root, new Set(seenRefs));
       if (error) return error;
     }
     if (schema.items === false && value.length > prefixItems.length) {
@@ -436,7 +447,7 @@ function validateJsonSchemaValue(value, schema, path) {
     }
     if (isRecord(schema.items)) {
       for (let index = prefixItems.length; index < value.length; index += 1) {
-        const error = validateJsonSchemaValue(value[index], schema.items, `${path}[${index}]`);
+        const error = validateJsonSchemaValue(value[index], schema.items, `${path}[${index}]`, root, new Set(seenRefs));
         if (error) return error;
       }
     }
@@ -445,17 +456,94 @@ function validateJsonSchemaValue(value, schema, path) {
   return null;
 }
 
+function canonicalJsonSchema(schema) {
+  let current = schema;
+  const visited = new Set();
+  while (isRecord(current)) {
+    if (schemaHasStructuralKeyword(current)) return current;
+    if (visited.has(current)) return current;
+    visited.add(current);
+    const wrapped = ["schema", "json_schema", "input_schema", "inputSchema"].map((key) => current[key]).find(isRecord);
+    if (!wrapped) return current;
+    current = wrapped;
+  }
+  return current;
+}
+
+function schemaHasStructuralKeyword(schema) {
+  return [
+    "$defs",
+    "$ref",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "const",
+    "definitions",
+    "enum",
+    "items",
+    "maxItems",
+    "minItems",
+    "oneOf",
+    "prefixItems",
+    "properties",
+    "required",
+    "type"
+  ].some((key) => Object.prototype.hasOwnProperty.call(schema, key));
+}
+
+function schemaReferenceTarget(schema, rootSchema, seenRefs = new Set()) {
+  if (!isRecord(schema) || typeof schema.$ref !== "string") return null;
+  const ref = schema.$ref.trim();
+  if (!ref.startsWith("#") || seenRefs.has(ref)) return null;
+  const target = jsonPointerTarget(rootSchema, ref);
+  if (!isRecord(target)) return null;
+  const nextSeenRefs = new Set(seenRefs);
+  nextSeenRefs.add(ref);
+  return { schema: target, seenRefs: nextSeenRefs };
+}
+
+function jsonPointerTarget(root, ref) {
+  if (ref === "#") return root;
+  if (!ref.startsWith("#/")) return null;
+  let pointer = ref.slice(1);
+  try {
+    pointer = decodeURIComponent(pointer);
+  } catch {}
+  let target = root;
+  for (const rawSegment of pointer.slice(1).split("/")) {
+    const segment = decodeJsonPointerSegment(rawSegment);
+    if (Array.isArray(target) && /^\d+$/.test(segment)) {
+      target = target[Number(segment)];
+    } else if (isRecord(target) && Object.prototype.hasOwnProperty.call(target, segment)) {
+      target = target[segment];
+    } else {
+      return null;
+    }
+  }
+  return target;
+}
+
+function decodeJsonPointerSegment(segment) {
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
 function schemaTypes(schema) {
   if (typeof schema.type === "string") return [schema.type];
   if (Array.isArray(schema.type)) return schema.type.filter((type) => typeof type === "string");
   return [];
 }
 
-function schemaAllowsNull(schema) {
+function schemaAllowsNull(schema, rootSchema = schema, seenRefs = new Set()) {
+  schema = canonicalJsonSchema(schema);
+  if (!isRecord(schema)) return false;
+  const root = canonicalJsonSchema(rootSchema || schema);
+  const reference = schemaReferenceTarget(schema, root, seenRefs);
+  if (reference) return schemaAllowsNull(reference.schema, root, reference.seenRefs);
+  if (schema?.nullable === true) return true;
   if (schemaTypes(schema).includes("null")) return true;
   for (const key of ["anyOf", "oneOf"]) {
     const variants = Array.isArray(schema[key]) ? schema[key] : [];
-    if (variants.some((candidate) => candidate && typeof candidate === "object" && schemaAllowsNull(candidate))) {
+    if (variants.some((candidate) => candidate && typeof candidate === "object" && schemaAllowsNull(candidate, root, new Set(seenRefs)))) {
       return true;
     }
   }
@@ -886,7 +974,7 @@ function normalizeJsonValue(value) {
 
 function clientMcpInputSchema(parameters) {
   if (isRecord(parameters) && Object.keys(parameters).length > 0) {
-    return normalizeJsonValue(parameters);
+    return canonicalJsonSchema(normalizeJsonValue(parameters));
   }
   return {
     type: "object",

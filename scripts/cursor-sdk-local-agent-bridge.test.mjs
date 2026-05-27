@@ -227,6 +227,38 @@ describe("Cursor SDK local-agent bridge", () => {
     });
   });
 
+  it("unwraps common dynamic client tool schema wrappers", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "wrapped_write_file",
+        parameters: {
+          json_schema: {
+            name: "wrapped_write_file",
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                path: { type: "string" },
+                content: { type: "string" }
+              },
+              required: ["path", "content"]
+            }
+          }
+        }
+      }
+    ]);
+
+    expect(tools.find((tool) => tool.name === "wrapped_write_file")).toMatchObject({
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "content"]
+      }
+    });
+    expect(validateClientMcpToolCall(tools, "wrapped_write_file", { path: "marker.txt" })).toBe("Missing required argument for wrapped_write_file: content");
+    expect(validateClientMcpToolCall(tools, "wrapped_write_file", { path: "marker.txt", content: "ok" })).toBe(null);
+  });
+
   it("rejects unknown or incomplete client MCP forwarding calls internally", () => {
     const tools = clientMcpToolDefinitions([
       {
@@ -245,6 +277,69 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(validateClientMcpToolCall(tools, "missing_tool", {})).toContain("Unknown client MCP forwarding tool");
     expect(validateClientMcpToolCall(tools, "probe_write_file", { file_path: "marker.txt" })).toBe("Missing required argument for probe_write_file: contents");
     expect(validateClientMcpToolCall(tools, "probe_write_file", { file_path: "marker.txt", contents: "" })).toBe(null);
+  });
+
+  it("validates dynamic client MCP schemas with local references", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "ref_write_file",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            target: { $ref: "#/$defs/fileTarget" },
+            metadata: { $ref: "#/definitions/metadata" },
+            format: { anyOf: [{ $ref: "#/$defs/format" }, { type: "null" }] }
+          },
+          required: ["target", "metadata"],
+          $defs: {
+            fileTarget: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                path: { type: "string" },
+                mode: { type: "string", enum: ["create", "overwrite"] }
+              },
+              required: ["path", "mode"]
+            },
+            format: { type: "string", enum: ["text", "markdown"] }
+          },
+          definitions: {
+            metadata: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                tags: { type: "array", items: { type: "string" }, minItems: 1 }
+              },
+              required: ["tags"]
+            }
+          }
+        }
+      }
+    ]);
+
+    expect(validateClientMcpToolCall(tools, "ref_write_file", {
+      target: { path: "src/App.tsx" },
+      metadata: { tags: ["ui"] }
+    })).toBe("Missing required argument for ref_write_file.target: mode");
+    expect(validateClientMcpToolCall(tools, "ref_write_file", {
+      target: { path: "src/App.tsx", mode: "append" },
+      metadata: { tags: ["ui"] }
+    })).toContain("expected one of");
+    expect(validateClientMcpToolCall(tools, "ref_write_file", {
+      target: { path: "src/App.tsx", mode: "create" },
+      metadata: { tags: [42] }
+    })).toBe("Invalid value for ref_write_file.metadata.tags[0]: expected string");
+    expect(validateClientMcpToolCall(tools, "ref_write_file", {
+      target: { path: "src/App.tsx", mode: "create" },
+      metadata: { tags: ["ui"] },
+      format: null
+    })).toBe(null);
+    expect(validateClientMcpToolCall(tools, "ref_write_file", {
+      target: { path: "src/App.tsx", mode: "create" },
+      metadata: { tags: ["ui"] },
+      format: "markdown"
+    })).toBe(null);
   });
 
   it("validates nested dynamic client MCP schemas before accepting forwarding calls", () => {
@@ -338,6 +433,52 @@ describe("Cursor SDK local-agent bridge", () => {
         arguments: {
           serverName: "filesystem",
           input: { mode: "append" }
+        }
+      }
+    };
+
+    const result = spawnSync(process.execPath, ["-e", source], {
+      input: `${JSON.stringify(message)}\n`,
+      encoding: "utf8",
+      timeout: 1000
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const response = JSON.parse(result.stdout.trim());
+    expect(response.error.message).toContain("expected one of");
+  });
+
+  it("bundles referenced schema validation into the generated MCP forwarding server", () => {
+    const source = clientForwardingMcpServerSource([
+      {
+        name: "ref_write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            target: { $ref: "#/$defs/fileTarget" }
+          },
+          required: ["target"],
+          $defs: {
+            fileTarget: {
+              type: "object",
+              properties: {
+                mode: { type: "string", enum: ["create"] }
+              },
+              required: ["mode"]
+            }
+          }
+        }
+      }
+    ]);
+    const message = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "ref_write_file",
+        arguments: {
+          target: { mode: "append" }
         }
       }
     };
