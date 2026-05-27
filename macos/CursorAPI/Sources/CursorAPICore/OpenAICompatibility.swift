@@ -1501,6 +1501,18 @@ public enum OpenAICompatibility {
             }
             records.append(contentsOf: argumentRecords(object, depth: depth + 1))
         }
+        for key in fileOperationArrayAliases() {
+            guard let nested = firstArgument(in: arguments, keys: [key])?.value,
+                  let array = arrayArgumentValue(nested) else {
+                continue
+            }
+            for item in array {
+                guard let object = objectArgumentValue(item) else {
+                    continue
+                }
+                records.append(contentsOf: argumentRecords(object, depth: depth + 1))
+            }
+        }
         return records
     }
 
@@ -1750,7 +1762,7 @@ public enum OpenAICompatibility {
     }
 
     private static func inferSDKCanonicalFromClientTool(arguments: [String: JSONValue], tool: OpenAIToolSpec?) -> String? {
-        let operation = firstArgument(in: arguments, keys: operationPropertyAliases())?.value.stringValue
+        let operation = firstArgument(inRecords: arguments, keys: operationPropertyAliases())?.value.stringValue
         switch normalizedName(operation ?? "") {
         case "write", "create", "overwrite":
             return "write"
@@ -1766,29 +1778,29 @@ public enum OpenAICompatibility {
 
         guard let tool else { return nil }
         if schemaLooksCompatible(sdkToolName: "shell", tool: tool),
-           firstArgument(in: arguments, keys: shellCommandAliases())?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+           firstArgument(inRecords: arguments, keys: shellCommandAliases())?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             return "shell"
         }
         if schemaLooksCompatible(sdkToolName: "edit", tool: tool),
-           firstArgument(in: arguments, keys: oldTextAliases()) != nil,
-           firstArgument(in: arguments, keys: newTextAliases()) != nil {
+           firstArgument(inRecords: arguments, keys: oldTextAliases()) != nil,
+           firstArgument(inRecords: arguments, keys: newTextAliases()) != nil {
             return "edit"
         }
         if schemaLooksCompatible(sdkToolName: "write", tool: tool),
-           firstArgument(in: arguments, keys: pathPropertyAliases()) != nil,
-           firstArgument(in: arguments, keys: fileContentAliases()) != nil {
+           firstArgument(inRecords: arguments, keys: pathPropertyAliases()) != nil,
+           firstArgument(inRecords: arguments, keys: fileContentAliases()) != nil {
             return "write"
         }
         if schemaLooksCompatible(sdkToolName: "glob", tool: tool),
-           firstArgument(in: arguments, keys: globPatternAliases())?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+           firstArgument(inRecords: arguments, keys: globPatternAliases())?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             return "glob"
         }
         if schemaLooksCompatible(sdkToolName: "grep", tool: tool),
-           firstArgument(in: arguments, keys: ["pattern", "query", "search", "regex", "searchPattern", "search_pattern"])?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+           firstArgument(inRecords: arguments, keys: ["pattern", "query", "search", "regex", "searchPattern", "search_pattern"])?.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             return "grep"
         }
         if schemaLooksCompatible(sdkToolName: "ls", tool: tool),
-           firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"]) != nil {
+           firstArgument(inRecords: arguments, keys: pathPropertyAliases() + ["directory", "dir"]) != nil {
             return "ls"
         }
         return nil
@@ -1807,30 +1819,30 @@ public enum OpenAICompatibility {
         switch canonical {
         case "shell":
             return compactJSON([
-                "command": firstArgument(in: arguments, keys: shellCommandAliases())?.value,
-                "workingDirectory": firstArgument(in: arguments, keys: shellWorkdirAliases())?.value,
-                "timeout": sdkTimeoutArgument(firstArgument(in: arguments, keys: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"]), tool: tool)
+                "command": firstArgument(inRecords: arguments, keys: shellCommandAliases())?.value,
+                "workingDirectory": firstArgument(inRecords: arguments, keys: shellWorkdirAliases())?.value,
+                "timeout": sdkTimeoutArgument(firstArgument(inRecords: arguments, keys: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"]), tool: tool)
             ])
         case "write":
             return compactJSON([
-                "path": firstArgument(in: arguments, keys: pathPropertyAliases())?.value,
-                "fileText": firstArgument(in: arguments, keys: fileContentAliases() + newTextAliases())?.value
+                "path": firstArgument(inRecords: arguments, keys: pathPropertyAliases())?.value,
+                "fileText": firstArgument(inRecords: arguments, keys: fileContentAliases() + newTextAliases())?.value
             ])
         case "read":
             return compactJSON([
-                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
-                "offset": firstArgument(in: arguments, keys: ["offset", "start", "startLine", "start_line"])?.value,
-                "limit": firstArgument(in: arguments, keys: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])?.value
+                "path": firstArgument(inRecords: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
+                "offset": firstArgument(inRecords: arguments, keys: ["offset", "start", "startLine", "start_line"])?.value,
+                "limit": firstArgument(inRecords: arguments, keys: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])?.value
             ])
         case "delete":
             return compactJSON([
-                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value
+                "path": firstArgument(inRecords: arguments, keys: pathPropertyAliases() + ["directory"])?.value
             ])
         case "edit":
             return compactJSON([
-                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
-                "oldString": firstArgument(in: arguments, keys: oldTextAliases())?.value,
-                "newString": firstArgument(in: arguments, keys: newTextAliases())?.value
+                "path": firstArgument(inRecords: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
+                "oldString": firstArgument(inRecords: arguments, keys: oldTextAliases())?.value,
+                "newString": firstArgument(inRecords: arguments, keys: newTextAliases())?.value
             ])
         case "glob":
             return compactJSON([
@@ -2190,6 +2202,9 @@ public enum OpenAICompatibility {
         }
         if let patchStyleFile = patchStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
             return finalizedToolArguments(patchStyleFile, source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
+        }
+        if let fileOperationArray = fileOperationArrayArgumentValue(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
+            return finalizedToolArguments([fileOperationArray.key: fileOperationArray.value], source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
         var output: [String: JSONValue] = [:]
@@ -2974,6 +2989,15 @@ public enum OpenAICompatibility {
         return nil
     }
 
+    private static func firstArgument(inRecords arguments: [String: JSONValue], keys: [String]) -> NamedArgument? {
+        for record in argumentRecords(arguments) {
+            if let argument = firstArgument(in: record, keys: keys) {
+                return argument
+            }
+        }
+        return nil
+    }
+
     private static func looksLikeGlobPattern(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -3425,6 +3449,16 @@ public enum OpenAICompatibility {
         var newKey: String
     }
 
+    private struct FileOperationArrayArgumentProperty {
+        var key: String
+        var itemTool: OpenAIToolSpec
+        var operationKey: String?
+        var pathKey: String
+        var contentKey: String?
+        var oldKey: String?
+        var newKey: String?
+    }
+
     private struct NamedJSONValue {
         var key: String
         var value: JSONValue
@@ -3467,6 +3501,97 @@ public enum OpenAICompatibility {
         return NamedJSONValue(key: editArray.key, value: .array([.object(item)]))
     }
 
+    private static func fileOperationArrayArgumentValue(
+        _ arguments: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        properties: [String],
+        context: ToolCallContext?
+    ) -> NamedJSONValue? {
+        let canonical = canonicalToolName(sdkToolName)
+        guard let array = fileOperationArrayArgumentProperty(canonical: canonical, tool: tool, properties: properties),
+              let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["target_file", "targetFile"])?.value,
+              shouldIncludeOptionalPath(path) else {
+            return nil
+        }
+
+        var item: [String: JSONValue] = [
+            array.pathKey: normalizeToolArgumentValue(path, property: array.pathKey, tool: array.itemTool, context: context)
+        ]
+        if let operationKey = array.operationKey {
+            item[operationKey] = .string(operationValue(for: canonical, property: operationKey, tool: array.itemTool))
+        }
+
+        switch canonical {
+        case "write":
+            guard let contentKey = array.contentKey,
+                  let content = firstArgument(in: arguments, keys: fileContentAliases())?.value else {
+                return nil
+            }
+            item[contentKey] = normalizeToolArgumentValue(content, property: contentKey, tool: array.itemTool, context: context)
+        case "edit":
+            guard let oldKey = array.oldKey,
+                  let newKey = array.newKey,
+                  let oldText = firstArgument(in: arguments, keys: oldTextAliases())?.value,
+                  let newText = firstArgument(in: arguments, keys: newTextAliases())?.value else {
+                return nil
+            }
+            item[oldKey] = normalizeToolArgumentValue(oldText, property: oldKey, tool: array.itemTool, context: context)
+            item[newKey] = normalizeToolArgumentValue(newText, property: newKey, tool: array.itemTool, context: context)
+        case "read":
+            copyOptionalArgument(&item, from: arguments, properties: parameterPropertyNames(array.itemTool), candidates: ["offset", "start", "startLine", "start_line"])
+            copyOptionalArgument(&item, from: arguments, properties: parameterPropertyNames(array.itemTool), candidates: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])
+            if let range = readRangeArgumentValue(arguments, tool: array.itemTool, properties: parameterPropertyNames(array.itemTool), context: context) {
+                item[range.key] = range.value
+            }
+        case "delete":
+            break
+        default:
+            return nil
+        }
+
+        return NamedJSONValue(key: array.key, value: .array([.object(item)]))
+    }
+
+    private static func fileOperationArrayArgumentProperty(canonical: String, tool: OpenAIToolSpec, properties: [String]) -> FileOperationArrayArgumentProperty? {
+        guard ["write", "read", "edit", "delete"].contains(canonical) else { return nil }
+        for candidate in fileOperationArrayAliases() {
+            guard let key = propertyName(matching: [candidate], in: properties),
+                  case .object(let propertySchema)? = parameterPropertySchema(key, tool: tool) else {
+                continue
+            }
+            let arraySchema = preferredArraySchema(propertySchema) ?? propertySchema
+            guard directSchemaLooksArray(arraySchema) else { continue }
+            let itemSchema = schemaWithInheritedDefinitions(arraySchema["items"], root: .object(arraySchema))
+            let itemTool = OpenAIToolSpec(name: tool.name, description: tool.description, parameters: itemSchema)
+            let itemProperties = parameterPropertyNames(itemTool)
+            guard let pathKey = propertyName(matching: pathPropertyAliases() + ["target_file", "targetFile"], in: itemProperties) else {
+                continue
+            }
+            let contentKey = propertyName(matching: fileContentAliases(), in: itemProperties)
+            let oldKey = propertyName(matching: oldTextAliases(), in: itemProperties)
+            let newKey = propertyName(matching: newTextAliases(), in: itemProperties)
+            switch canonical {
+            case "write" where contentKey == nil:
+                continue
+            case "edit" where oldKey == nil || newKey == nil:
+                continue
+            default:
+                break
+            }
+            return FileOperationArrayArgumentProperty(
+                key: key,
+                itemTool: itemTool,
+                operationKey: propertyName(matching: operationPropertyAliases(), in: itemProperties),
+                pathKey: pathKey,
+                contentKey: contentKey,
+                oldKey: oldKey,
+                newKey: newKey
+            )
+        }
+        return nil
+    }
+
     private static func editArrayArgumentProperty(tool: OpenAIToolSpec, properties: [String]) -> EditArrayArgumentProperty? {
         for candidate in ["edits", "replacements", "changes", "operations", "items"] {
             guard let key = propertyName(matching: [candidate], in: properties),
@@ -3494,7 +3619,13 @@ public enum OpenAICompatibility {
     }
 
     private static func commandStyleFileToolSupports(_ canonical: String, tool: OpenAIToolSpec, properties: [String]) -> Bool {
-        guard ["write", "read", "edit", "delete"].contains(canonical),
+        guard ["write", "read", "edit", "delete"].contains(canonical) else {
+            return false
+        }
+        if fileOperationArrayArgumentProperty(canonical: canonical, tool: tool, properties: properties) != nil {
+            return true
+        }
+        guard
               propertyName(matching: operationPropertyAliases(), in: properties) != nil,
               propertyName(matching: pathPropertyAliases(), in: properties) != nil else {
             return false
@@ -4166,6 +4297,13 @@ public enum OpenAICompatibility {
         ["input", "args", "arguments", "params", "parameters", "payload", "data"]
     }
 
+    private static func fileOperationArrayAliases() -> [String] {
+        [
+            "operations", "fileOperations", "file_operations", "actions", "changes",
+            "items", "entries", "files", "fileChanges", "file_changes"
+        ]
+    }
+
     private static func patchStyleFileArguments(
         _ arguments: [String: JSONValue],
         sdkToolName: String,
@@ -4285,15 +4423,19 @@ public enum OpenAICompatibility {
         case "shell":
             return has(shellCommandAliases())
         case "write":
-            return has(pathPropertyAliases()) && has(fileContentAliases())
+            return (has(pathPropertyAliases()) && has(fileContentAliases()))
+                || fileOperationArrayArgumentProperty(canonical: "write", tool: tool, properties: properties) != nil
         case "read":
             return has(pathPropertyAliases())
+                || fileOperationArrayArgumentProperty(canonical: "read", tool: tool, properties: properties) != nil
         case "delete":
-            return toolCanonical == "delete" && has(pathPropertyAliases())
+            return (toolCanonical == "delete" && has(pathPropertyAliases()))
+                || fileOperationArrayArgumentProperty(canonical: "delete", tool: tool, properties: properties) != nil
         case "edit":
             let editArray = editArrayArgumentProperty(tool: tool, properties: properties)
             return (has(pathPropertyAliases()) || editArray?.pathKey != nil)
                 && ((has(oldTextAliases()) && has(newTextAliases())) || editArray != nil)
+                || fileOperationArrayArgumentProperty(canonical: "edit", tool: tool, properties: properties) != nil
         case "grep":
             return has(["pattern", "query", "regex"])
         case "glob":
