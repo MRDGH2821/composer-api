@@ -65,11 +65,10 @@
   }
   // Required secret:
   // ENCRYPTION_KEY - 32+ random bytes as hex/base64/plain text, used to encrypt Cursor API keys at rest.
-  // CURSOR_BACKEND_BASE_URL - private Cursor backend origin.
-  // CURSOR_CHAT_ENDPOINT - private Cursor chat endpoint path or URL.
-  // CURSOR_LOCAL_AGENT_ENDPOINT - private Cursor local SDK endpoint path or URL.
+  // CURSOR_BACKEND_BASE_URL - configured as a secret for the legacy chat transport.
+  // CURSOR_CHAT_ENDPOINT - configured as a secret for the legacy chat transport.
   // Optional secret:
-  // CURSOR_SDK_BRIDGE_URL - HTTPS URL for the Node SDK HTTP/2 bridge.
+  // CURSOR_SDK_BRIDGE_URL - HTTPS URL for an external Node or Bun SDK bridge.
   // CURSOR_SDK_BRIDGE_TOKEN - bearer token shared with the SDK bridge.
   // WAITLIST_API_TOKEN - bearer token for https://agents.standardagentbuilder.com/api/waitlist.
 }

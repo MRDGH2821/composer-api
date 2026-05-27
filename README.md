@@ -9,8 +9,8 @@ Live deployment: https://cursor-api.standardagents.ai
 Cursor does not expose Composer 2.5 as a raw OpenAI-compatible model endpoint. API for Cursor adapts OpenAI-style requests into the format Cursor accepts:
 
 - `POST /auth/exchange_user_api_key`
-- a private Cursor chat endpoint configured with `CURSOR_CHAT_ENDPOINT`
-- a private Cursor local SDK endpoint configured with `CURSOR_LOCAL_AGENT_ENDPOINT`
+- legacy chat transport configured through Worker secrets
+- a small SDK bridge for local-agent routes
 
 Each generic `/v1` request is stateless from the caller's perspective: the Worker creates a fresh request/conversation id, sends the full prompt, streams text back, and does not create a hosted agent. The recommended OpenCode route is `/opencodev2/v1`: it uses a small SDK-compatible local-agent harness, so OpenCode owns the local filesystem and shell tool loop while SDK tool-call events are translated back into OpenAI-compatible `tool_calls`. The legacy `/opencode/v1` route remains available for the older Cursor chat-endpoint behavior.
 
@@ -117,13 +117,11 @@ Configure OpenCode with `@ai-sdk/openai-compatible` and select
 `cursorsdk/composer-2.5-sdk`, displayed as **Composer 2.5 SDK Harness**.
 
 For session affinity, the Worker stores only hashed owner/session keys and the
-local SDK agent id; it does not store the caller's Cursor API key. Cloudflare
-Workers do not currently provide a functional `node:http2` client, so production
-SDK runs use a tiny JavaScript bridge in `scripts/cursor-sdk-opencode-bridge.mjs`.
-The bridge can run on Node or Bun, owns only the HTTP/2 transport, and does not
-execute local filesystem tools. In the deployed Worker this runs as a shared
-Cloudflare Container behind the `CURSOR_SDK_BRIDGE_CONTAINER` Durable Object
-binding.
+local SDK agent id; it does not store the caller's Cursor API key. Production
+SDK runs use a tiny JavaScript bridge in
+`scripts/cursor-sdk-local-agent-bridge.mjs`. The bridge runs the real
+`@cursor/sdk` local agent runtime, cancels as soon as the model selects a local
+tool, and returns that tool call to the OpenAI-compatible client for execution.
 
 <details>
 <summary>Use the old /opencode/v1 route</summary>
@@ -161,16 +159,13 @@ Create a local `.dev.vars` file:
 ```bash
 ENCRYPTION_KEY="replace-with-a-long-random-secret"
 WAITLIST_API_TOKEN="optional-standard-agents-waitlist-token"
-CURSOR_BACKEND_BASE_URL="private-cursor-backend-origin"
-CURSOR_CHAT_ENDPOINT="private-cursor-chat-endpoint"
-CURSOR_LOCAL_AGENT_ENDPOINT="private-cursor-local-sdk-agent-endpoint"
 CURSOR_SDK_BRIDGE_URL="optional-external-node-sdk-bridge-url"
 CURSOR_SDK_BRIDGE_TOKEN="optional-external-shared-bridge-token"
 CURSOR_CLIENT_VERSION="2.6.22"
 CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13"
 ```
 
-Run the optional SDK HTTP/2 bridge in a local Node or Bun environment:
+Run the optional SDK local-agent bridge in a local Node or Bun environment:
 
 ```bash
 npm run sdk:opencode-bridge
@@ -197,7 +192,6 @@ Required secrets:
 wrangler secret put ENCRYPTION_KEY
 wrangler secret put CURSOR_BACKEND_BASE_URL
 wrangler secret put CURSOR_CHAT_ENDPOINT
-wrangler secret put CURSOR_LOCAL_AGENT_ENDPOINT
 ```
 
 The OpenCode SDK harness also requires the `0002_sdk_sessions.sql` migration so

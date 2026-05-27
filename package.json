@@ -16,7 +16,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "sdk:opencode-bridge": "node scripts/cursor-sdk-opencode-bridge.mjs",
+    "sdk:opencode-bridge": "node scripts/cursor-sdk-local-agent-bridge.mjs",
     "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

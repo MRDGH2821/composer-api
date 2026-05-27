@@ -39,7 +39,8 @@ plist_has_nonempty_value() {
 [ "$(plist_value CFBundleIconFile "$INFO_PLIST")" = "APIForCursor" ] || fail "CFBundleIconFile changed"
 
 [ -x "$MACOS_DIR/$APP_NAME" ] || fail "main executable is missing or not executable"
-[ -s "$RESOURCES_DIR/cursor-sdk-opencode-bridge.mjs" ] || fail "SDK bridge script is missing"
+[ -s "$RESOURCES_DIR/cursor-sdk-local-agent-bridge.mjs" ] || fail "SDK bridge script is missing"
+[ -d "$RESOURCES_DIR/node_modules/@cursor/sdk" ] || fail "bundled @cursor/sdk dependencies are missing"
 if [ -x "$RESOURCES_DIR/node" ]; then
   BRIDGE_RUNTIME_PATH="$RESOURCES_DIR/node"
 elif [ -x "$RESOURCES_DIR/bun" ]; then
@@ -127,10 +128,10 @@ do
   [ -s "$BUNDLE_DIR/$resource" ] || fail "resource bundle is missing $resource"
 done
 
-[ -f "$TRANSPORT_PLIST" ] || fail "bundled transport defaults are missing"
-for key in cursorAPIBaseURL backendBaseURL localAgentEndpoint clientVersion
+[ -f "$TRANSPORT_PLIST" ] || fail "bundled SDK defaults are missing"
+for key in clientVersion
 do
-  plist_has_nonempty_value "$key" "$TRANSPORT_PLIST" || fail "bundled transport default $key is missing"
+  plist_has_nonempty_value "$key" "$TRANSPORT_PLIST" || fail "bundled SDK default $key is missing"
 done
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null

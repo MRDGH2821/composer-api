@@ -74,7 +74,6 @@ public struct PreparedChatRequest: Equatable, Sendable {
     public var storeResponse: Bool
     public var responseInputItems: [JSONValue]
     public var toolContext: ToolCallContext?
-    public var fallbackLocalToolCall: CursorToolCall?
 }
 
 public enum OpenAICompatibility {
@@ -218,9 +217,6 @@ public enum OpenAICompatibility {
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
-        let fallbackLocalToolCall = localToolRequired && !mutationToolCallAfterLatestUser
-            ? deterministicLocalToolCall(for: latestUserText, tools: tools)
-            : nil
         return PreparedChatRequest(
             model: model,
             cursorModelID: model,
@@ -234,8 +230,7 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: [],
-            toolContext: toolContext,
-            fallbackLocalToolCall: fallbackLocalToolCall
+            toolContext: toolContext
         )
     }
 
@@ -268,8 +263,7 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: [],
-            toolContext: nil,
-            fallbackLocalToolCall: nil
+            toolContext: nil
         )
     }
 
@@ -313,8 +307,7 @@ public enum OpenAICompatibility {
             previousResponseID: nil,
             storeResponse: false,
             responseInputItems: normalizedResponseInputItems(raw["input"]),
-            toolContext: nil,
-            fallbackLocalToolCall: nil
+            toolContext: nil
         )
     }
 
@@ -361,9 +354,6 @@ public enum OpenAICompatibility {
         }
         appendOptions(&transcript, raw)
         let prompt = transcript.joined(separator: "\n")
-        let fallbackLocalToolCall = localToolRequired && !localToolDone
-            ? deterministicLocalToolCall(for: latestUserText, tools: tools)
-            : nil
         return PreparedChatRequest(
             model: model,
             cursorModelID: model,
@@ -377,8 +367,7 @@ public enum OpenAICompatibility {
             previousResponseID: previousResponseID,
             storeResponse: raw["store"] as? Bool ?? true,
             responseInputItems: normalizedResponseInputItems(input),
-            toolContext: toolContext,
-            fallbackLocalToolCall: fallbackLocalToolCall
+            toolContext: toolContext
         )
     }
 
@@ -1339,30 +1328,6 @@ public enum OpenAICompatibility {
                lower.contains(loweredName) || lower.contains(normalized) {
                 return name
             }
-        }
-        return nil
-    }
-
-    private static func deterministicLocalToolCall(for text: String, tools: [OpenAIToolSpec]) -> CursorToolCall? {
-        guard let requestedTool = explicitlyRequestedToolName(in: text, tools: tools) else { return nil }
-        if canonicalToolName(requestedTool) == "glob" {
-            return CursorToolCall(name: "glob", arguments: [
-                "targetDirectory": .string("."),
-                "globPattern": .string(firstGlobPattern(in: text) ?? "**/*")
-            ])
-        }
-        return nil
-    }
-
-    private static func firstGlobPattern(in text: String) -> String? {
-        let trimCharacters = CharacterSet(charactersIn: "`\"',;:()<>")
-        for rawToken in text.components(separatedBy: .whitespacesAndNewlines) {
-            let token = rawToken.trimmingCharacters(in: trimCharacters)
-            guard !token.isEmpty,
-                  token.range(of: #"[*?\[\]{}]"#, options: .regularExpression) != nil else {
-                continue
-            }
-            return token
         }
         return nil
     }

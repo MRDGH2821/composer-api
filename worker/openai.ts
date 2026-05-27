@@ -14,7 +14,6 @@ export interface PreparedRequest {
   responseMetadata: Record<string, unknown>;
   tools: OpenAiToolSpec[];
   requiresLocalTool: boolean;
-  fallbackLocalToolCall?: CursorToolCall;
   previousResponseId?: string;
   storeResponse?: boolean;
   responseInputItems?: unknown[];
@@ -224,9 +223,6 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
   }
   appendChatOptions(transcript, record);
   const text = transcript.join("\n");
-  const fallbackLocalToolCall = workspaceMutationRequired && !workspaceMutationDone
-    ? deterministicLocalToolCall(latestUserText, tools)
-    : undefined;
   return {
     model,
     cursorModel,
@@ -240,7 +236,6 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
     },
     tools,
     requiresLocalTool: workspaceMutationRequired && !workspaceMutationDone,
-    ...(fallbackLocalToolCall ? { fallbackLocalToolCall } : {}),
     storeResponse: false,
     toolContext
   };
@@ -296,7 +291,7 @@ export function prepareResponsesRequest(
       ...(tools.length ? { tools: responseToolMetadata(tools), tool_choice: responseToolChoiceMetadata(record.tool_choice) } : {})
     },
     tools,
-    requiresLocalTool: false,
+    requiresLocalTool: workspaceMutationRequired && !workspaceMutationDone,
     previousResponseId,
     storeResponse,
     responseInputItems: normalizedResponseInputItems(record.input),
@@ -1021,29 +1016,6 @@ function explicitlyRequestedToolName(text: string, tools: OpenAiToolSpec[]): str
     }
     return (name.includes("_") || name.includes("-")) && (lower.includes(loweredName) || lower.includes(normalized));
   })?.name;
-}
-
-function deterministicLocalToolCall(text: string, tools: OpenAiToolSpec[]): CursorToolCall | undefined {
-  const requestedTool = explicitlyRequestedToolName(text, tools);
-  if (!requestedTool) return undefined;
-  if (canonicalToolName(requestedTool) === "glob") {
-    return {
-      name: "glob",
-      arguments: {
-        targetDirectory: ".",
-        globPattern: firstGlobPatternFromText(text) || "**/*"
-      }
-    };
-  }
-  return undefined;
-}
-
-function firstGlobPatternFromText(text: string): string | undefined {
-  for (const rawToken of text.split(/\s+/)) {
-    const token = rawToken.replace(/^[`"',;:()<>]+|[`"',;:()<>]+$/g, "");
-    if (token && looksLikeGlobPattern(token)) return token;
-  }
-  return undefined;
 }
 
 function requestedToolHint(toolName: string): string {

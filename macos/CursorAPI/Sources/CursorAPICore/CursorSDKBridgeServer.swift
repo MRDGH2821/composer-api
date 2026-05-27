@@ -64,9 +64,6 @@ actor CursorSDKBridgeServer {
         environment["CURSOR_SDK_BRIDGE_HOST"] = "127.0.0.1"
         environment["CURSOR_SDK_BRIDGE_PORT"] = String(port)
         environment["CURSOR_SDK_BRIDGE_TOKEN"] = token
-        environment["CURSOR_BACKEND_BASE_URL"] = settings.backendBaseURL
-        environment["CURSOR_LOCAL_AGENT_ENDPOINT"] = settings.localAgentEndpoint
-        environment["CURSOR_SDK_CLIENT_VERSION"] = settings.clientVersion.isEmpty ? "sdk-1.0.13" : settings.clientVersion
         environment["CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS"] = "120000"
         process.environment = environment
         process.currentDirectoryURL = script.deletingLastPathComponent()
@@ -162,9 +159,9 @@ actor CursorSDKBridgeServer {
 
     private func bridgeScriptURL() throws -> URL {
         let candidates = [
-            Bundle.main.url(forResource: "cursor-sdk-opencode-bridge", withExtension: "mjs"),
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appending(path: "scripts/cursor-sdk-opencode-bridge.mjs"),
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).deletingLastPathComponent().appending(path: "scripts/cursor-sdk-opencode-bridge.mjs")
+            Bundle.main.url(forResource: "cursor-sdk-local-agent-bridge", withExtension: "mjs"),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appending(path: "scripts/cursor-sdk-local-agent-bridge.mjs"),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).deletingLastPathComponent().appending(path: "scripts/cursor-sdk-local-agent-bridge.mjs")
         ].compactMap(\.self)
         for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
             return candidate

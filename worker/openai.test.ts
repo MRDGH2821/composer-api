@@ -1104,10 +1104,6 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(prepared.requiresLocalTool).toBe(true);
     expect(prepared.prompt.text).toContain("Use SDK glob now; it will be forwarded to client tool glob");
-    expect(prepared.fallbackLocalToolCall).toEqual({
-      name: "glob",
-      arguments: { targetDirectory: ".", globPattern: "**/*.tsx" }
-    });
 
     const generated = toOpenAiToolCalls({
       responseId: "chatcmpl_explicit_glob",

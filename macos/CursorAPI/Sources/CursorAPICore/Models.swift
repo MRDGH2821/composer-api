@@ -49,9 +49,7 @@ public struct CursorAPISettings: Codable, Equatable, Sendable {
     }
 
     public var hasCursorSDKConfiguration: Bool {
-        hasCursorAPIExchangeConfiguration
-            && !backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !localAgentEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        true
     }
 
     public var hasCursorAPIExchangeConfiguration: Bool {

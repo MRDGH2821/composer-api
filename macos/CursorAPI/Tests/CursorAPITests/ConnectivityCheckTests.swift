@@ -51,78 +51,6 @@ final class ConnectivityCheckTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
-    func testSDKAccessTokenCacheReusesTokenUntilExpiry() async throws {
-        let cache = CursorSDKAccessTokenCache(ttl: 60)
-        let counter = ExchangeCounter()
-        let firstDate = Date(timeIntervalSince1970: 100)
-
-        let first = try await cache.token(for: "crsr_one", origin: "https://exchange.example", now: firstDate) {
-            await counter.next()
-        }
-        let second = try await cache.token(for: "crsr_one", origin: "https://exchange.example", now: firstDate.addingTimeInterval(30)) {
-            await counter.next()
-        }
-        let third = try await cache.token(for: "crsr_one", origin: "https://exchange.example", now: firstDate.addingTimeInterval(61)) {
-            await counter.next()
-        }
-
-        XCTAssertEqual(first, "token-1")
-        XCTAssertEqual(second, "token-1")
-        XCTAssertEqual(third, "token-2")
-        let exchangeCount = await counter.value()
-        XCTAssertEqual(exchangeCount, 2)
-    }
-
-    func testSDKAccessTokenCacheSeparatesOriginsAndInvalidates() async throws {
-        let cache = CursorSDKAccessTokenCache(ttl: 60)
-        let counter = ExchangeCounter()
-        let now = Date(timeIntervalSince1970: 100)
-
-        let first = try await cache.token(for: "crsr_one", origin: "https://one.example", now: now) {
-            await counter.next()
-        }
-        let secondOrigin = try await cache.token(for: "crsr_one", origin: "https://two.example", now: now) {
-            await counter.next()
-        }
-        await cache.invalidate(apiKey: "crsr_one", origin: "https://one.example")
-        let refreshed = try await cache.token(for: "crsr_one", origin: "https://one.example", now: now) {
-            await counter.next()
-        }
-
-        XCTAssertEqual(first, "token-1")
-        XCTAssertEqual(secondOrigin, "token-2")
-        XCTAssertEqual(refreshed, "token-3")
-        let cacheCount = await cache.count()
-        XCTAssertEqual(cacheCount, 2)
-    }
-
-    func testSDKAccessTokenCacheCoalescesConcurrentExchanges() async throws {
-        let cache = CursorSDKAccessTokenCache(ttl: 60)
-        let counter = ExchangeCounter()
-        let now = Date(timeIntervalSince1970: 100)
-
-        let tokens = try await withThrowingTaskGroup(of: String.self) { group in
-            for _ in 0..<8 {
-                group.addTask {
-                    try await cache.token(for: "crsr_one", origin: "https://exchange.example", now: now) {
-                        try await Task.sleep(nanoseconds: 50_000_000)
-                        return await counter.next()
-                    }
-                }
-            }
-
-            var values: [String] = []
-            for try await value in group {
-                values.append(value)
-            }
-            return values
-        }
-        let exchangeCount = await counter.value()
-
-        XCTAssertEqual(Set(tokens), ["token-1"])
-        XCTAssertEqual(exchangeCount, 1)
-    }
-
     func testSDKHarnessUsesSavedKeyForLocalPlaceholderTokens() {
         let settings = CursorAPISettings(cursorAPIKey: "crsr_saved")
 
@@ -150,19 +78,6 @@ final class ConnectivityCheckTests: XCTestCase {
         let error = try XCTUnwrap(payload["error"] as? [String: Any])
         XCTAssertEqual(error["code"] as? String, "keychain_locked")
         XCTAssertTrue((error["message"] as? String)?.contains("Unlock Key") == true)
-    }
-}
-
-private actor ExchangeCounter {
-    private var count = 0
-
-    func next() -> String {
-        count += 1
-        return "token-\(count)"
-    }
-
-    func value() -> Int {
-        count
     }
 }
 

@@ -16,7 +16,7 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICONSET_DIR="$RESOURCES_DIR/APIForCursor.iconset"
 APP_ICON_SOURCE="$ROOT_DIR/Sources/CursorAPI/Resources/APIForCursor.png"
-BRIDGE_SCRIPT_SOURCE="$REPOSITORY_DIR/scripts/cursor-sdk-opencode-bridge.mjs"
+BRIDGE_SCRIPT_SOURCE="$REPOSITORY_DIR/scripts/cursor-sdk-local-agent-bridge.mjs"
 REQUIRE_BUNDLED_TRANSPORT="${CURSOR_API_REQUIRE_BUNDLED_TRANSPORT:-0}"
 BRIDGE_RUNTIME_SOURCE="${CURSOR_API_BRIDGE_RUNTIME_BINARY:-${CURSOR_API_BUN_BINARY:-${CURSOR_API_NODE_BINARY:-}}}"
 BRIDGE_RUNTIME_NAME="${CURSOR_API_BRIDGE_RUNTIME_NAME:-}"
@@ -33,10 +33,10 @@ while [ "$#" -gt 0 ]; do
       cat <<USAGE
 Usage: $0 [--development|--release]
 
-  --development  Build a local development app. Missing bundled transport defaults
-                 are allowed and the app will show Transport Missing. This is the
+  --development  Build a local development app. Missing bundled SDK defaults
+                 are allowed and the app will show SDK Bridge Missing. This is the
                  default.
-  --release      Refuse to package unless complete bundled Composer transport
+  --release      Refuse to package unless complete bundled SDK bridge
                  defaults are available from local environment files or the
                  current environment.
 
@@ -67,7 +67,7 @@ fi
 [ -s "$APP_ICON_SOURCE" ] || { echo "Missing app icon source at $APP_ICON_SOURCE" >&2; exit 1; }
 cp "$APP_ICON_SOURCE" "$RESOURCES_DIR/APIForCursor.png"
 [ -s "$BRIDGE_SCRIPT_SOURCE" ] || { echo "Missing SDK bridge script at $BRIDGE_SCRIPT_SOURCE" >&2; exit 1; }
-cp "$BRIDGE_SCRIPT_SOURCE" "$RESOURCES_DIR/cursor-sdk-opencode-bridge.mjs"
+cp "$BRIDGE_SCRIPT_SOURCE" "$RESOURCES_DIR/cursor-sdk-local-agent-bridge.mjs"
 if [ -z "$BRIDGE_RUNTIME_SOURCE" ] && command -v node >/dev/null 2>&1; then
   BRIDGE_RUNTIME_SOURCE="$(node -p 'process.execPath' 2>/dev/null || true)"
   BRIDGE_RUNTIME_NAME="node"
@@ -97,6 +97,22 @@ case "$BRIDGE_RUNTIME_NAME" in
 esac
 cp "$BRIDGE_RUNTIME_SOURCE" "$RESOURCES_DIR/$BRIDGE_RUNTIME_NAME"
 chmod 755 "$RESOURCES_DIR/$BRIDGE_RUNTIME_NAME"
+if [ ! -d "$REPOSITORY_DIR/node_modules/@cursor/sdk" ]; then
+  echo "Missing @cursor/sdk dependencies; run npm install before packaging." >&2
+  exit 1
+fi
+rm -rf "$RESOURCES_DIR/node_modules"
+mkdir -p "$RESOURCES_DIR/node_modules"
+while IFS= read -r module_path; do
+  [ "$module_path" = "$REPOSITORY_DIR" ] && continue
+  case "$module_path" in
+    "$REPOSITORY_DIR/node_modules/"*) ;;
+    *) continue ;;
+  esac
+  relative_module="${module_path#$REPOSITORY_DIR/node_modules/}"
+  mkdir -p "$(dirname "$RESOURCES_DIR/node_modules/$relative_module")"
+  cp -R "$module_path" "$RESOURCES_DIR/node_modules/$relative_module"
+done < <(cd "$REPOSITORY_DIR" && npm ls --omit=dev --all --parseable)
 swift - "$RESOURCES_DIR" "$ROOT_DIR" <<'SWIFT'
 import Foundation
 import Darwin
@@ -142,45 +158,8 @@ func loadEnvironmentFile(_ url: URL) -> [String: String] {
     return values
 }
 
-func firstRegexCapture(_ pattern: String, in text: String, startingAt startOffset: Int = 0) -> String? {
-    guard startOffset >= 0, startOffset < text.utf16.count,
-          let regex = try? NSRegularExpression(pattern: pattern) else {
-        return nil
-    }
-    let range = NSRange(location: startOffset, length: text.utf16.count - startOffset)
-    guard let match = regex.firstMatch(in: text, range: range),
-          match.numberOfRanges > 1,
-          let captureRange = Range(match.range(at: 1), in: text) else {
-        return nil
-    }
-    return String(text[captureRange])
-}
-
 func inferSDKTransportDefaults(repositoryDirectory: URL) -> [String: String] {
-    let sdkBundleCandidates = [
-        repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/dist/esm/index.js"),
-        repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/dist/cjs/index.js")
-    ]
-    guard let bundleURL = sdkBundleCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
-          let bundleText = try? String(contentsOf: bundleURL, encoding: .utf8) else {
-        return [:]
-    }
-
     var values: [String: String] = [:]
-    if let backend = firstRegexCapture(#"CURSOR_BACKEND_URL[^"']{0,240}["'](https?://[^"']+)["']"#, in: bundleText) {
-        values["backendBaseURL"] = backend
-        values["cursorAPIBaseURL"] = backend
-    }
-
-    if let serviceOffset = bundleText.range(of: "AgentService")?.lowerBound {
-        let startOffset = NSRange(serviceOffset..<bundleText.endIndex, in: bundleText).location
-        let service = firstRegexCapture(#"AgentService\s*=\s*\{typeName:"([^"]+)""#, in: bundleText, startingAt: startOffset)
-        let method = firstRegexCapture(#"AgentService\s*=\s*\{typeName:"[^"]+",methods:\{run:\{name:"([^"]+)""#, in: bundleText, startingAt: startOffset)
-        if let service, let method {
-            values["localAgentEndpoint"] = "/\(service)/\(method)"
-        }
-    }
-
     let packageURL = repositoryDirectory.appendingPathComponent("node_modules/@cursor/sdk/package.json")
     if let data = try? Data(contentsOf: packageURL),
        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -206,9 +185,6 @@ for file in localEnvironmentFiles {
 packagingValues.merge(environment) { _, new in new }
 
 let mappings = [
-    ("CURSOR_API_BASE", "cursorAPIBaseURL"),
-    ("CURSOR_BACKEND_BASE_URL", "backendBaseURL"),
-    ("CURSOR_LOCAL_AGENT_ENDPOINT", "localAgentEndpoint"),
     ("CURSOR_SDK_CLIENT_VERSION", "clientVersion")
 ]
 
@@ -222,14 +198,14 @@ for (environmentKey, plistKey) in mappings {
 
 let inferredDefaults = inferSDKTransportDefaults(repositoryDirectory: repositoryDirectory)
 var usedInferredDefaults = false
-for key in ["backendBaseURL", "cursorAPIBaseURL", "localAgentEndpoint", "clientVersion"] {
+for key in ["clientVersion"] {
     if defaults[key] == nil, let value = inferredDefaults[key] {
         defaults[key] = value
         usedInferredDefaults = true
     }
 }
 
-let requiredKeys = ["cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"]
+let requiredKeys: [String] = []
 let missingKeys = requiredKeys.filter { defaults[$0] == nil }
 let hasCompleteRouting = missingKeys.isEmpty
 if hasCompleteRouting {
@@ -238,15 +214,15 @@ if hasCompleteRouting {
         FileHandle.standardError.write(Data("Could not write bundled Composer routing defaults.\n".utf8))
         exit(1)
     }
-    print(usedInferredDefaults ? "Embedded bundled Composer transport defaults from installed SDK metadata." : "Embedded bundled Composer transport defaults.")
+    print(usedInferredDefaults ? "Embedded bundled SDK defaults from installed SDK metadata." : "Embedded bundled SDK defaults.")
 } else {
-    let message = "No complete bundled Composer transport defaults found; missing \(missingKeys.joined(separator: ", "))."
+    let message = "No complete bundled SDK defaults found; missing \(missingKeys.joined(separator: ", "))."
     let required = ["1", "true", "yes"].contains((environment["CURSOR_API_REQUIRE_BUNDLED_TRANSPORT"] ?? "").lowercased())
     if required {
         FileHandle.standardError.write(Data("\(message) Refusing release package.\n".utf8))
         exit(2)
     }
-    print("\(message) This build will show Transport Missing.")
+    print("\(message) This build will show SDK Bridge Missing.")
 }
 SWIFT
 mkdir -p "$ICONSET_DIR"

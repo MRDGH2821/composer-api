@@ -16,15 +16,15 @@ final class LocalAPIServerTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(object["host"] as? String, "127.0.0.1")
         XCTAssertEqual(object["service"] as? String, CursorAPIBrand.displayName)
-        XCTAssertEqual(object["routingConfigured"] as? Bool, false)
-        XCTAssertEqual(object["sdkConfigured"] as? Bool, false)
+        XCTAssertEqual(object["routingConfigured"] as? Bool, true)
+        XCTAssertEqual(object["sdkConfigured"] as? Bool, true)
         XCTAssertEqual(object["apiKeyConfigured"] as? Bool, false)
         XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, false)
         XCTAssertEqual(object["keychainKeyAvailable"] as? Bool, false)
         XCTAssertEqual(object["ready"] as? Bool, false)
         XCTAssertEqual(object["status"] as? String, "needs_api_key")
         XCTAssertEqual(object["baseUrl"] as? String, "http://127.0.0.1:\(port)/v1")
-        XCTAssertEqual(object["missing"] as? [String], ["cursorAPIKey", "cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"])
+        XCTAssertEqual(object["missing"] as? [String], ["cursorAPIKey"])
         XCTAssertEqual(object["models"] as? [String], ["composer-2.5", "composer-2.5-fast"])
         let responses = try XCTUnwrap(object["responses"] as? [String: Any])
         XCTAssertEqual((responses["sessions"] as? NSNumber)?.intValue, 0)
@@ -33,10 +33,8 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual((responses["toolCallMemory"] as? NSNumber)?.intValue, 0)
         XCTAssertEqual((responses["maxStored"] as? NSNumber)?.intValue, 512)
         let routing = try XCTUnwrap(object["routing"] as? [String: Any])
-        XCTAssertEqual(routing["configured"] as? Bool, false)
-        XCTAssertEqual(routing["keyExchangeConfigured"] as? Bool, false)
-        XCTAssertEqual(routing["backendConfigured"] as? Bool, false)
-        XCTAssertEqual(routing["localAgentConfigured"] as? Bool, false)
+        XCTAssertEqual(routing["configured"] as? Bool, true)
+        XCTAssertEqual(routing["sdkBridgeConfigured"] as? Bool, true)
     }
 
     func testHealthEndpointReportsSanitizedReadyState() async throws {
@@ -45,8 +43,8 @@ final class LocalAPIServerTests: XCTestCase {
             port: port,
             cursorAPIKey: "crsr_test",
             cursorAPIBaseURL: "https://exchange.example",
-            backendBaseURL: "https://private-backend.example",
-            localAgentEndpoint: "/private/sdk/run",
+            backendBaseURL: "https://redacted-backend.example",
+            localAgentEndpoint: "/redacted/sdk/run",
             clientVersion: "sdk-test"
         )
         let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
@@ -69,11 +67,11 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(object["missing"] as? [String], [])
         XCTAssertFalse(text.contains("crsr_test"))
         XCTAssertFalse(text.contains("exchange.example"))
-        XCTAssertFalse(text.contains("private-backend.example"))
-        XCTAssertFalse(text.contains("/private/sdk/run"))
+        XCTAssertFalse(text.contains("redacted-backend.example"))
+        XCTAssertFalse(text.contains("/redacted/sdk/run"))
     }
 
-    func testHealthEndpointReportsRoutingMissingWhenKeyIsPresent() async throws {
+    func testHealthEndpointReportsReadyWhenInlineKeyIsPresent() async throws {
         let port = try unusedTCPPort()
         let settings = CursorAPISettings(port: port, cursorAPIKey: "crsr_test")
         let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
@@ -85,12 +83,12 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        XCTAssertEqual(object["ready"] as? Bool, false)
-        XCTAssertEqual(object["status"] as? String, "routing_missing")
+        XCTAssertEqual(object["ready"] as? Bool, true)
+        XCTAssertEqual(object["status"] as? String, "ready")
         XCTAssertEqual(object["apiKeyConfigured"] as? Bool, true)
         XCTAssertEqual(object["apiKeyUnlocked"] as? Bool, true)
-        XCTAssertEqual(object["routingConfigured"] as? Bool, false)
-        XCTAssertEqual(object["missing"] as? [String], ["cursorAPIBaseURL", "backendBaseURL", "localAgentEndpoint"])
+        XCTAssertEqual(object["routingConfigured"] as? Bool, true)
+        XCTAssertEqual(object["missing"] as? [String], [])
     }
 
     func testHealthEndpointReportsNeedsUnlockForSavedKeyOnly() async throws {
@@ -99,8 +97,8 @@ final class LocalAPIServerTests: XCTestCase {
             port: port,
             keychainCursorAPIKeyAvailable: true,
             cursorAPIBaseURL: "https://exchange.example",
-            backendBaseURL: "https://private-backend.example",
-            localAgentEndpoint: "/private/sdk/run"
+            backendBaseURL: "https://redacted-backend.example",
+            localAgentEndpoint: "/redacted/sdk/run"
         )
         let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
         try server.start(port: port)
@@ -126,8 +124,8 @@ final class LocalAPIServerTests: XCTestCase {
             port: port,
             keychainCursorAPIKeyAvailable: true,
             cursorAPIBaseURL: "https://exchange.example",
-            backendBaseURL: "https://private-backend.example",
-            localAgentEndpoint: "/private/sdk/run"
+            backendBaseURL: "https://redacted-backend.example",
+            localAgentEndpoint: "/redacted/sdk/run"
         )
         let server = LocalAPIServer(settingsProvider: { settings })
         try server.start(port: port)
@@ -162,8 +160,8 @@ final class LocalAPIServerTests: XCTestCase {
             port: port,
             cursorAPIKey: "crsr_test",
             cursorAPIBaseURL: "https://exchange.example",
-            backendBaseURL: "https://private-backend.example",
-            localAgentEndpoint: "/private/sdk/run"
+            backendBaseURL: "https://redacted-backend.example",
+            localAgentEndpoint: "/redacted/sdk/run"
         )
         let server = LocalAPIServer(settingsProvider: { settings }, harness: MockHarness())
         try server.start(port: port)
@@ -199,8 +197,8 @@ final class LocalAPIServerTests: XCTestCase {
             XCTAssertEqual(features["tool_calls"], true, path)
             XCTAssertFalse(text.contains("crsr_test"), path)
             XCTAssertFalse(text.contains("exchange.example"), path)
-            XCTAssertFalse(text.contains("private-backend.example"), path)
-            XCTAssertFalse(text.contains("/private/sdk/run"), path)
+            XCTAssertFalse(text.contains("redacted-backend.example"), path)
+            XCTAssertFalse(text.contains("/redacted/sdk/run"), path)
         }
     }
 
@@ -1737,10 +1735,6 @@ final class LocalAPIServerTests: XCTestCase {
 
         XCTAssertTrue(first.prompt.contains("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST"))
         XCTAssertTrue(first.prompt.contains("Use SDK glob now; it will be forwarded to client tool glob"))
-        XCTAssertEqual(first.fallbackLocalToolCall, CursorToolCall(name: "glob", arguments: [
-            "targetDirectory": .string("."),
-            "globPattern": .string("**/*.tsx")
-        ]))
 
         let continued = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

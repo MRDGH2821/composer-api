@@ -40,7 +40,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(settings.hasCursorSDKConfiguration)
     }
 
-    func testRoutingConfigurationRequiresKeyExchangeOrigin() {
+    func testSDKConfigurationNoLongerRequiresKeyExchangeOrigin() {
         let settings = CursorAPISettings(
             cursorAPIKey: "",
             backendBaseURL: "https://routing.example",
@@ -48,10 +48,10 @@ final class SettingsTests: XCTestCase {
         )
 
         XCTAssertFalse(settings.hasCursorAPIExchangeConfiguration)
-        XCTAssertFalse(settings.hasCursorSDKConfiguration)
+        XCTAssertTrue(settings.hasCursorSDKConfiguration)
     }
 
-    func testLegacyCursorAPIBaseURLDoesNotCountAsRoutingConfiguration() {
+    func testLegacyCursorAPIBaseURLDoesNotBlockLocalSDKBridge() {
         let settings = CursorAPISettings(
             cursorAPIKey: "",
             cursorAPIBaseURL: CursorAPISettings.legacyCursorAPIBaseURL,
@@ -60,7 +60,7 @@ final class SettingsTests: XCTestCase {
         )
 
         XCTAssertFalse(settings.hasCursorAPIExchangeConfiguration)
-        XCTAssertFalse(settings.hasCursorSDKConfiguration)
+        XCTAssertTrue(settings.hasCursorSDKConfiguration)
     }
 
     func testSettingsEncodingDoesNotPersistKeychainAvailabilityMarker() throws {

@@ -76,7 +76,7 @@ fail() {
 
 stop_app() {
   osascript -e 'tell application id "ai.standardagents.cursorapi" to quit' >/dev/null 2>&1 || true
-  pkill -f 'cursor-sdk-opencode-bridge.mjs' >/dev/null 2>&1 || true
+  pkill -f 'cursor-sdk-local-agent-bridge.mjs' >/dev/null 2>&1 || true
 }
 
 run_with_timeout() {

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 public protocol CursorSDKHarness: Sendable {
     func validate(settings: CursorAPISettings, authorization: String?) throws
@@ -44,15 +43,11 @@ public extension CursorSDKHarness {
 
 public struct LocalCursorSDKHarness: CursorSDKHarness {
     private static let sessionStore = CursorSDKSessionStore(maxEntries: 512)
-    private static let accessTokenCache = CursorSDKAccessTokenCache(ttl: 10 * 60, maxEntries: 64)
     private static let toolRetryAttempts = 3
 
     public init() {}
 
     public func validate(settings: CursorAPISettings, authorization: String?) throws {
-        guard settings.hasCursorSDKConfiguration else {
-            throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled Composer transport. Repackage the app with release defaults or inspect Settings > Advanced Transport Overrides.")
-        }
         let apiKey = try Self.resolvedCursorAPIKeyForRequest(from: authorization, settings: settings)
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CursorAPIError.unauthorized
@@ -67,34 +62,14 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                     let apiKey = try Self.resolvedCursorAPIKeyForRequest(from: authorization, settings: settings)
                     let agentID = await Self.sessionStore.agentID(for: prepared.sessionKey)
                     let runID = Self.newRunID()
-                    let tokenOrigin = settings.cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let accessToken = try await Self.accessTokenCache.token(for: apiKey, origin: tokenOrigin) {
-                        try await exchangeCursorAPIKey(apiKey, settings: settings)
-                    }
-                    let output: CursorSDKOutput
-                    do {
-                        output = try await runSDKRequestWithToolRetry(
-                            agentID: agentID,
-                            runID: runID,
-                            prepared: prepared,
-                            accessToken: accessToken,
-                            settings: settings,
-                            onEvent: { continuation.yield($0) }
-                        )
-                    } catch CursorAPIError.unauthorized {
-                        await Self.accessTokenCache.invalidate(apiKey: apiKey, origin: tokenOrigin)
-                        let refreshedToken = try await Self.accessTokenCache.token(for: apiKey, origin: tokenOrigin) {
-                            try await exchangeCursorAPIKey(apiKey, settings: settings)
-                        }
-                        output = try await runSDKRequestWithToolRetry(
-                            agentID: agentID,
-                            runID: runID,
-                            prepared: prepared,
-                            accessToken: refreshedToken,
-                            settings: settings,
-                            onEvent: { continuation.yield($0) }
-                        )
-                    }
+                    let output = try await runSDKRequestWithToolRetry(
+                        agentID: agentID,
+                        runID: runID,
+                        prepared: prepared,
+                        apiKey: apiKey,
+                        settings: settings,
+                        onEvent: { continuation.yield($0) }
+                    )
                     continuation.yield(.done(output))
                     continuation.finish()
                 } catch {
@@ -108,7 +83,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         agentID: String,
         runID: String,
         prepared: PreparedChatRequest,
-        accessToken: String,
+        apiKey: String,
         settings: CursorAPISettings,
         onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
     ) async throws -> CursorSDKOutput {
@@ -118,7 +93,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                 agentID: agentID,
                 runID: runID,
                 prepared: prepared,
-                accessToken: accessToken,
+                apiKey: apiKey,
                 settings: settings,
                 onEvent: onEvent
             )
@@ -131,7 +106,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                 agentID: agentID,
                 runID: attempt == 1 ? runID : Self.newRunID(),
                 prepared: attemptPrepared,
-                accessToken: accessToken,
+                apiKey: apiKey,
                 settings: settings,
                 onEvent: { buffered.append($0) }
             )
@@ -145,11 +120,6 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
 
             let needsRetry = unsupportedToolCall != nil || shouldRetryMissing
             guard needsRetry, attempt < Self.toolRetryAttempts else {
-                if let fallback = prepared.fallbackLocalToolCall,
-                   shouldRetryMissing || unsupportedToolCall != nil {
-                    onEvent(.toolCall(fallback))
-                    return CursorSDKOutput(text: "", toolCalls: [fallback], agentID: agentID, runID: runID)
-                }
                 for event in buffered.events() {
                     onEvent(event)
                 }
@@ -168,7 +138,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             agentID: agentID,
             runID: Self.newRunID(),
             prepared: prepared,
-            accessToken: accessToken,
+            apiKey: apiKey,
             settings: settings,
             onEvent: onEvent
         )
@@ -213,127 +183,46 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         agentID: String,
         runID: String,
         prepared: PreparedChatRequest,
-        accessToken: String,
+        apiKey: String,
         settings: CursorAPISettings,
         onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
     ) async throws -> CursorSDKOutput {
-        let requestID = UUID().uuidString.lowercased()
-        let request = CursorSDKProto.runRequest(
+        let output = try await runActualSDKBridgeRequest(
+            apiKey: apiKey,
             agentID: agentID,
-            messageID: runID,
-            modelID: prepared.cursorModelID,
-            prompt: prepared.prompt
+            runID: runID,
+            prepared: prepared,
+            settings: settings
         )
-        let framed = ConnectProto.frame(request)
-        let decoder = CursorSDKFrameDecoderBox()
-        _ = try await runRawSDKRequest(
-            framedBody: framed,
-            accessToken: accessToken,
-            requestID: requestID,
-            settings: settings,
-            workingDirectory: prepared.toolContext?.workingDirectory
-        ) { payload in
-            let events = decoder.push(payload)
-            for event in events {
-                onEvent(event)
-            }
+        for toolCall in output.toolCalls {
+            onEvent(.toolCall(toolCall))
         }
-        return decoder.output(agentID: agentID, runID: runID)
+        if output.toolCalls.isEmpty, !output.text.isEmpty {
+            onEvent(.text(output.text))
+        }
+        return output
     }
 
-    private func exchangeCursorAPIKey(_ apiKey: String, settings: CursorAPISettings) async throws -> String {
-        guard settings.hasCursorAPIExchangeConfiguration else {
-            throw CursorAPIError.invalidConfiguration("This \(CursorAPIBrand.displayName) build is missing its bundled Composer key-exchange origin. Repackage the app with complete transport defaults or inspect Settings > Advanced Transport Overrides.")
-        }
-        guard let base = URL(string: settings.cursorAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw CursorAPIError.invalidConfiguration("Cursor key-exchange origin is not a valid URL.")
-        }
-        let url = base.appending(path: "/auth/exchange_user_api_key")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = Data("{}".utf8)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sdk", forHTTPHeaderField: "x-cursor-client-type")
-        request.setValue("composer-api-macos-0.1.0", forHTTPHeaderField: "x-cursor-client-version")
-        request.setValue("true", forHTTPHeaderField: "x-ghost-mode")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw CursorAPIError.transport("Cursor API did not return an HTTP response.")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let text = String(data: data, encoding: .utf8) ?? "status \(http.statusCode)"
-            throw http.statusCode == 401 ? CursorAPIError.unauthorized : CursorAPIError.upstream(text)
-        }
-        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accessToken = payload["accessToken"] as? String,
-              !accessToken.isEmpty else {
-            throw CursorAPIError.upstream("Cursor did not return an internal access token.")
-        }
-        return accessToken
-    }
-
-    private func runRawSDKRequest(
-        framedBody: Data,
-        accessToken: String,
-        requestID: String,
-        settings: CursorAPISettings,
-        workingDirectory: String?,
-        onFrame: @escaping @Sendable (Data) -> Void
-    ) async throws -> Data {
-        let endpoint = try endpointURL(settings: settings)
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.httpBody = framedBody
-        request.timeoutInterval = 180
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
-        request.setValue("application/connect+proto", forHTTPHeaderField: "Content-Type")
-        request.setValue("connect-es/1.6.1", forHTTPHeaderField: "User-Agent")
-        request.setValue("sdk", forHTTPHeaderField: "x-cursor-client-type")
-        request.setValue(settings.clientVersion.isEmpty ? "sdk-1.0.13" : settings.clientVersion, forHTTPHeaderField: "x-cursor-client-version")
-        request.setValue("true", forHTTPHeaderField: "x-ghost-mode")
-        request.setValue(requestID, forHTTPHeaderField: "x-original-request-id")
-        request.setValue(requestID, forHTTPHeaderField: "x-request-id")
-
-        if ProcessInfo.processInfo.environment["CURSOR_API_USE_SWIFT_HTTP2_TRANSPORT"] == "1" {
-            return try await CursorSDKHTTP2Transport.shared.runStreaming(request: request, initialFrame: framedBody, workingDirectory: workingDirectory, onFrame: onFrame)
-        } else {
-            let bridge = try await CursorSDKBridgeServer.shared.endpoint(settings: settings)
-            return try await runBridgeSDKRequest(
-                bridge: bridge,
-                framedBody: framedBody,
-                accessToken: accessToken,
-                requestID: requestID,
-                settings: settings,
-                workingDirectory: workingDirectory,
-                onFrame: onFrame
-            )
-        }
-    }
-
-    private func runBridgeSDKRequest(
-        bridge: CursorSDKBridgeEndpoint,
-        framedBody: Data,
-        accessToken: String,
-        requestID: String,
-        settings: CursorAPISettings,
-        workingDirectory: String?,
-        onFrame: @escaping @Sendable (Data) -> Void
-    ) async throws -> Data {
+    private func runActualSDKBridgeRequest(
+        apiKey: String,
+        agentID: String,
+        runID: String,
+        prepared: PreparedChatRequest,
+        settings: CursorAPISettings
+    ) async throws -> CursorSDKOutput {
+        let bridge = try await CursorSDKBridgeServer.shared.endpoint(settings: settings)
         var request = URLRequest(url: bridge.url)
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(bridge.token)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
-            "accessToken": accessToken,
-            "requestId": requestID,
-            "backendBaseUrl": settings.backendBaseURL,
-            "localAgentEndpoint": settings.localAgentEndpoint,
-            "clientVersion": settings.clientVersion.isEmpty ? "sdk-1.0.13" : settings.clientVersion,
-            "runFrame": framedBody.base64EncodedString(),
-            "workingDirectory": workingDirectory ?? ""
+            "apiKey": apiKey,
+            "requestId": runID,
+            "model": prepared.cursorModelID,
+            "prompt": prepared.prompt,
+            "sessionKey": prepared.sessionKey ?? agentID,
+            "workingDirectory": prepared.toolContext?.workingDirectory ?? ""
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.withoutEscapingSlashes])
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -344,28 +233,18 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             let text = String(data: data, encoding: .utf8) ?? "status \(http.statusCode)"
             throw http.statusCode == 401 ? CursorAPIError.unauthorized : CursorAPIError.upstream(text)
         }
-        for frame in ConnectProto.frames(from: data) {
-            onFrame(frame)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CursorAPIError.transport("Cursor SDK bridge returned invalid JSON.")
         }
-        return data
-    }
-
-    private func endpointURL(settings: CursorAPISettings) throws -> URL {
-        let endpoint = settings.localAgentEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if endpoint.hasPrefix("http://") || endpoint.hasPrefix("https://") {
-            guard let url = URL(string: endpoint) else {
-                throw CursorAPIError.invalidConfiguration("Cursor local-agent endpoint is not a valid URL.")
-            }
-            return url
+        let text = object["text"] as? String ?? ""
+        let bridgeAgentID = object["agentID"] as? String ?? agentID
+        let bridgeRunID = object["runID"] as? String ?? runID
+        let toolCalls = (object["toolCalls"] as? [[String: Any]] ?? []).compactMap { item -> CursorToolCall? in
+            guard let name = item["name"] as? String else { return nil }
+            let arguments = (item["arguments"] as? [String: Any] ?? [:]).mapValues(JSONValue.from)
+            return CursorToolCall(name: name, arguments: arguments)
         }
-        guard let base = URL(string: settings.backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw CursorAPIError.invalidConfiguration("Cursor backend origin is not a valid URL.")
-        }
-        var normalized = endpoint
-        if !normalized.hasPrefix("/") {
-            normalized = "/" + normalized
-        }
-        return base.appending(path: normalized)
+        return CursorSDKOutput(text: text, toolCalls: toolCalls, agentID: bridgeAgentID, runID: bridgeRunID)
     }
 
     static func resolvedCursorAPIKey(from authorization: String?, settings: CursorAPISettings) -> String {
@@ -443,87 +322,6 @@ actor CursorSDKSessionStore {
         while sessionOrder.count > maxEntries, let evicted = sessionOrder.first {
             sessionOrder.removeFirst()
             agents.removeValue(forKey: evicted)
-        }
-    }
-}
-
-actor CursorSDKAccessTokenCache {
-    private struct Entry {
-        var token: String
-        var expiresAt: Date
-    }
-
-    private let ttl: TimeInterval
-    private let maxEntries: Int
-    private var entries: [String: Entry] = [:]
-    private var entryOrder: [String] = []
-    private var inFlight: [String: Task<String, any Error>] = [:]
-
-    init(ttl: TimeInterval, maxEntries: Int = 64) {
-        self.ttl = max(1, ttl)
-        self.maxEntries = max(1, maxEntries)
-    }
-
-    func token(
-        for apiKey: String,
-        origin: String,
-        now: Date = Date(),
-        exchange: @escaping @Sendable () async throws -> String
-    ) async throws -> String {
-        let key = cacheKey(apiKey: apiKey, origin: origin)
-        if let entry = entries[key], entry.expiresAt > now {
-            touch(key)
-            return entry.token
-        }
-
-        if let task = inFlight[key] {
-            return try await task.value
-        }
-
-        let task = Task {
-            try await exchange()
-        }
-        inFlight[key] = task
-        let token: String
-        do {
-            token = try await task.value
-        } catch {
-            inFlight.removeValue(forKey: key)
-            throw error
-        }
-        inFlight.removeValue(forKey: key)
-        entries[key] = Entry(token: token, expiresAt: now.addingTimeInterval(ttl))
-        touch(key)
-        evictIfNeeded()
-        return token
-    }
-
-    func invalidate(apiKey: String, origin: String) {
-        let key = cacheKey(apiKey: apiKey, origin: origin)
-        entries.removeValue(forKey: key)
-        inFlight.removeValue(forKey: key)?.cancel()
-        entryOrder.removeAll { $0 == key }
-    }
-
-    func count() -> Int {
-        entries.count
-    }
-
-    private func cacheKey(apiKey: String, origin: String) -> String {
-        let normalizedOrigin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
-        let digest = SHA256.hash(data: Data("\(normalizedOrigin)\u{0}\(apiKey)".utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func touch(_ key: String) {
-        entryOrder.removeAll { $0 == key }
-        entryOrder.append(key)
-    }
-
-    private func evictIfNeeded() {
-        while entryOrder.count > maxEntries, let evicted = entryOrder.first {
-            entryOrder.removeFirst()
-            entries.removeValue(forKey: evicted)
         }
     }
 }

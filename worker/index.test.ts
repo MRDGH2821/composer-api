@@ -197,7 +197,7 @@ describe("Worker", () => {
     expect(db.accounts.size).toBe(0);
     expect(db.apiKeys.size).toBe(0);
 
-    // The caller's own key is forwarded only to Cursor's key-exchange endpoint.
+    // The caller's own key is forwarded only for Cursor API-key authorization.
     expect(exchangeAuthHeaders).toContain("Bearer cursor_direct_key");
   });
 
@@ -599,7 +599,11 @@ describe("Worker", () => {
     });
     expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /sdk"]);
     expect(sdkRequests[0].headers.get("content-type")).toContain("application/json");
-    expect(String(sdkRequests[0].body)).toContain("SDK-compatible OpenCode harness");
+    expect(sdkRequests[0].body).toMatchObject({
+      apiKey: "cursor_direct_key_bridge",
+      model: "composer-2.5"
+    });
+    expect(String((sdkRequests[0].body as { prompt?: string }).prompt || "")).toContain("SDK-compatible OpenCode harness");
   });
 
   it("prefers the shared container bridge when the Durable Object binding exists", async () => {
@@ -614,7 +618,7 @@ describe("Worker", () => {
         const headers = new Headers(init?.headers);
         const body = JSON.parse(String(init?.body || "{}")) as Record<string, string>;
         bridgeRequests.push({ path: url.pathname, headers, body });
-        return localSdkFakeResponse(sdkRunKind(decodeBase64ForTest(body.runFrame)));
+        return localSdkBridgeJsonResponse(sdkRunKind(body.prompt || ""));
       })
     };
     const { deps, sdkRequests } = fakeDeps();
@@ -648,8 +652,8 @@ describe("Worker", () => {
     expect(bridgeRequests).toHaveLength(1);
     expect(bridgeRequests[0].path).toBe("/sdk");
     expect(bridgeRequests[0].headers.get("authorization")).toBe("Bearer bridge-token");
-    expect(bridgeRequests[0].body.backendBaseUrl).toBe("https://cursor-backend.test");
-    expect(bridgeRequests[0].body.localAgentEndpoint).toBe("/test-local-sdk");
+    expect(bridgeRequests[0].body.apiKey).toBe("cursor_direct_key_container_bridge");
+    expect(bridgeRequests[0].body.model).toBe("composer-2.5");
     expect(bridgeRequests[0].body.workingDirectory).toBe("/tmp/project");
   });
 
@@ -1409,10 +1413,9 @@ function fakeDeps(): {
       }
       if (url.hostname === "bridge.test" && url.pathname === "/sdk" && init?.method === "POST") {
         const headers = new Headers(init.headers);
-        const payload = JSON.parse(String(init.body || "{}")) as { runFrame?: string };
-        const body = payload.runFrame ? decodeBase64ForTest(payload.runFrame) : "";
+        const body = JSON.parse(String(init.body || "{}")) as Record<string, unknown>;
         sdkRequests.push({ method: "POST", path: url.pathname, headers, body });
-        return localSdkFakeResponse(sdkRunKind(body));
+        return localSdkBridgeJsonResponse(sdkRunKind(typeof body.prompt === "string" ? body.prompt : ""));
       }
       if (url.pathname === "/test-cursor-chat" && init?.method === "POST") {
         const headers = new Headers(init.headers);
@@ -1596,6 +1599,53 @@ function localSdkFakeResponse(kind: ReturnType<typeof sdkRunKind>): Response {
     }),
     { headers: { "Content-Type": "application/connect+proto" } }
   );
+}
+
+function localSdkBridgeJsonResponse(kind: ReturnType<typeof sdkRunKind>): Response {
+  if (kind === "list") {
+    return Response.json({ text: "", toolCalls: [{ name: "glob", arguments: { globPattern: "*" } }], agentID: "agent-test", runID: "run-test" });
+  }
+  if (kind === "invalid") {
+    return Response.json({
+      text: "",
+      toolCalls: [
+        {
+          name: "mcp",
+          arguments: {
+            name: "create_issue",
+            providerIdentifier: "github",
+            toolName: "create_issue",
+            args: { body: "Missing required title" }
+          }
+        }
+      ],
+      agentID: "agent-test",
+      runID: "run-test"
+    });
+  }
+  if (kind === "drop") {
+    return Response.json({ text: "Partial after retry", toolCalls: [], agentID: "agent-test", runID: "run-test" });
+  }
+  if (kind === "shell") {
+    return Response.json({
+      text: "",
+      toolCalls: [{ name: "shell", arguments: { command: "npm test", workingDirectory: "/workspace" } }],
+      agentID: "agent-test",
+      runID: "run-test"
+    });
+  }
+  if (kind === "completed") {
+    return Response.json({
+      text: "Done after cloud result",
+      toolCalls: [{ name: "read", arguments: { path: "README.md" } }],
+      agentID: "agent-test",
+      runID: "run-test"
+    });
+  }
+  if (kind === "tool-result") {
+    return Response.json({ text: "Tool result incorporated", toolCalls: [], agentID: "agent-test", runID: "run-test" });
+  }
+  return Response.json({ text: "Hello from SDK", toolCalls: [], agentID: "agent-test", runID: "run-test" });
 }
 
 function decodeBase64ForTest(value: string): string {

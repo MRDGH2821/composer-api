@@ -75,7 +75,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     var sdkStatusText: String {
         if !sdkConfigured {
-            return "Transport Missing"
+            return "SDK Bridge Missing"
         }
         if needsKeychainPermission {
             return "Needs Unlock"
@@ -155,7 +155,7 @@ final class CursorAPIAppModel: ObservableObject {
             return "Save a Cursor API key before installing agent configs."
         }
         if !sdkConfigured {
-            return "This build is missing bundled Composer transport, so agent setup is disabled."
+            return "This build is missing the bundled SDK bridge, so agent setup is disabled."
         }
         if needsKeychainPermission {
             return "Configs can be updated now; unlock the saved key before agents make Composer requests."
@@ -175,7 +175,7 @@ final class CursorAPIAppModel: ObservableObject {
         }
         guard sdkConfigured else {
             isRunning = false
-            statusText = "This app build is missing bundled Composer transport"
+            statusText = "This app build is missing the bundled SDK bridge"
             lastError = nil
             return
         }
@@ -318,7 +318,7 @@ final class CursorAPIAppModel: ObservableObject {
 
     func checkSDKConnectivity() {
         guard canCheckSDK else {
-            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This app build is missing bundled Composer transport.")
+            sdkCheckState = .failure(sdkConfigured ? "Enter a Cursor API key before checking Composer." : "This app build is missing the bundled SDK bridge.")
             return
         }
         isCheckingSDK = true
@@ -348,14 +348,14 @@ final class CursorAPIAppModel: ObservableObject {
             if needsKeychainPermission {
                 statusText = "Listening on \(baseURL); unlock the saved key for one-click agents"
             } else {
-                statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bundled transport missing"
+                statusText = sdkConfigured ? "Listening on \(baseURL)" : "Listening on \(baseURL); bundled SDK bridge missing"
             }
         } else if needsKeychainPermission {
             statusText = "Click Start to allow \(CursorAPIBrand.displayName) to read the saved key from Keychain"
         } else if !hasCursorAPIKey {
             statusText = "Enter a Cursor API key to start the local API"
         } else if !sdkConfigured {
-            statusText = "This app build is missing bundled Composer transport"
+            statusText = "This app build is missing the bundled SDK bridge"
         } else {
             statusText = "Ready to start local API"
         }
@@ -385,7 +385,7 @@ final class CursorAPIAppModel: ObservableObject {
             return false
         }
         guard sdkConfigured else {
-            lastError = "This app build is missing bundled Composer transport."
+            lastError = "This app build is missing the bundled SDK bridge."
             return false
         }
         if !isRunning {

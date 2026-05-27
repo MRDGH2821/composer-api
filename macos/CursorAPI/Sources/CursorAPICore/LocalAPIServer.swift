@@ -834,37 +834,32 @@ public final class LocalAPIServer: @unchecked Sendable {
     }
 
     private func healthObject(settings: CursorAPISettings, responseState: LocalResponseSessionStore.Stats) -> [String: Any] {
-        let keyExchangeConfigured = settings.hasCursorAPIExchangeConfiguration
-        let backendConfigured = settings.backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty != nil
-        let localAgentConfigured = settings.localAgentEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty != nil
-        let routingConfigured = keyExchangeConfigured && backendConfigured && localAgentConfigured
+        let sdkBridgeConfigured = settings.hasCursorSDKConfiguration
         let apiKeyConfigured = settings.hasCursorAPIKey
         let apiKeyUnlocked = settings.hasInlineCursorAPIKey
         let missing = [
             apiKeyConfigured ? nil : "cursorAPIKey",
-            keyExchangeConfigured ? nil : "cursorAPIBaseURL",
-            backendConfigured ? nil : "backendBaseURL",
-            localAgentConfigured ? nil : "localAgentEndpoint"
+            sdkBridgeConfigured ? nil : "sdkBridge"
         ].compactMap { $0 }
         let status: String
-        if apiKeyUnlocked && routingConfigured {
+        if apiKeyUnlocked && sdkBridgeConfigured {
             status = "ready"
         } else if !apiKeyConfigured {
             status = "needs_api_key"
-        } else if !routingConfigured {
-            status = "routing_missing"
+        } else if !sdkBridgeConfigured {
+            status = "sdk_bridge_missing"
         } else {
             status = "needs_unlock"
         }
         return [
             "ok": true,
-            "ready": apiKeyUnlocked && routingConfigured,
+            "ready": apiKeyUnlocked && sdkBridgeConfigured,
             "status": status,
             "service": CursorAPIBrand.displayName,
             "baseUrl": settings.baseURL.absoluteString,
             "host": "127.0.0.1",
-            "routingConfigured": routingConfigured,
-            "sdkConfigured": routingConfigured,
+            "routingConfigured": sdkBridgeConfigured,
+            "sdkConfigured": sdkBridgeConfigured,
             "apiKeyConfigured": apiKeyConfigured,
             "apiKeyUnlocked": apiKeyUnlocked,
             "keychainKeyAvailable": settings.keychainCursorAPIKeyAvailable,
@@ -878,10 +873,8 @@ public final class LocalAPIServer: @unchecked Sendable {
                 "maxStored": responseState.maxEntries
             ],
             "routing": [
-                "configured": routingConfigured,
-                "keyExchangeConfigured": keyExchangeConfigured,
-                "backendConfigured": backendConfigured,
-                "localAgentConfigured": localAgentConfigured,
+                "configured": sdkBridgeConfigured,
+                "sdkBridgeConfigured": sdkBridgeConfigured,
                 "clientVersion": settings.clientVersion
             ]
         ]

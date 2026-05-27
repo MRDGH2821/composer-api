@@ -15,6 +15,14 @@ interface CursorSdkCompletion {
   stream: AsyncGenerator<CursorTextEvent>;
 }
 
+interface CursorSdkBridgeOutput {
+  text?: string;
+  toolCalls?: CursorToolCall[];
+  agentID?: string;
+  runID?: string;
+  status?: string;
+}
+
 type ToolCallDecision = boolean | string;
 
 interface ProtobufField {
@@ -92,11 +100,9 @@ export async function createCursorSdkCompletion(
     sessionOwnerKey?: string;
     workingDirectory?: string;
     requiresLocalTool?: boolean;
-    fallbackToolCall?: CursorToolCall;
     allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
   }
 ): Promise<CursorSdkCompletion> {
-  const accessToken = await exchangeCursorApiKey(env, deps, apiKey);
   const now = deps.now();
   pruneSessions(now.getTime());
   const sessionIdentity = await sdkSessionIdentity(apiKey, input.sessionKey || "default", input.sessionOwnerKey);
@@ -108,19 +114,30 @@ export async function createCursorSdkCompletion(
   sdkSessions.set(sessionIdentity.id, { agentId, updatedAt: updatedAt.getTime() });
   await savePersistedSdkSession(env, sessionIdentity, agentId, updatedAt);
 
+  const runInput = {
+    agentId,
+    runId,
+    sessionKey: sessionIdentity.id,
+    prompt: sdkPrompt(input.prompt),
+    modelId: input.model?.id || "composer-2.5",
+    workingDirectory: input.workingDirectory,
+    requiresLocalTool: input.requiresLocalTool === true,
+    allowToolCall: input.allowToolCall
+  };
+
+  if (hasCursorSdkBridge(env)) {
+    return {
+      agentId,
+      runId,
+      stream: streamCursorLocalSdkBridgeRunWithRetry(env, deps, apiKey, runInput)
+    };
+  }
+
+  const accessToken = await exchangeCursorApiKey(env, deps, apiKey);
   return {
     agentId,
     runId,
-    stream: streamCursorLocalSdkRunWithRetry(env, deps, accessToken, {
-      agentId,
-      runId,
-      prompt: sdkPrompt(input.prompt),
-      modelId: input.model?.id || "composer-2.5",
-      workingDirectory: input.workingDirectory,
-      requiresLocalTool: input.requiresLocalTool === true,
-      fallbackToolCall: input.fallbackToolCall,
-      allowToolCall: input.allowToolCall
-    })
+    stream: streamCursorLocalSdkRunWithRetry(env, deps, accessToken, runInput)
   };
 }
 
@@ -178,17 +195,16 @@ async function* streamCursorLocalSdkRun(
     })
   );
   const runAbort = new AbortController();
-  const bridgeBinding = env.CURSOR_SDK_BRIDGE_CONTAINER;
-  const bridgeUrl = env.CURSOR_SDK_BRIDGE_URL?.trim();
-  const useBridge = Boolean(bridgeBinding || bridgeUrl);
-  const upload = useBridge ? undefined : new TransformStream<Uint8Array, Uint8Array>();
-  const uploadWriter = upload?.writable.getWriter();
-  const runResponsePromise = (
-    bridgeBinding
-      ? cursorLocalSdkContainerBridgeRaw(env, bridgeBinding, accessToken, requestId, requestBody, input.workingDirectory, runAbort.signal)
-      : bridgeUrl
-        ? cursorLocalSdkUrlBridgeRaw(env, deps, bridgeUrl, accessToken, requestId, requestBody, input.workingDirectory, runAbort.signal)
-        : cursorLocalSdkRaw(env, deps, cursorLocalSdkEndpoint(env), accessToken, requestId, upload!.readable, runAbort.signal)
+  const upload = new TransformStream<Uint8Array, Uint8Array>();
+  const uploadWriter = upload.writable.getWriter();
+  const runResponsePromise = cursorLocalSdkRaw(
+    env,
+    deps,
+    cursorLocalSdkEndpoint(env),
+    accessToken,
+    requestId,
+    upload.readable,
+    runAbort.signal
   ).then((response) => ({
     source: "run" as const,
     response
@@ -254,7 +270,6 @@ async function* streamCursorLocalSdkRunWithRetry(
     modelId: string;
     workingDirectory?: string;
     requiresLocalTool: boolean;
-    fallbackToolCall?: CursorToolCall;
     allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
   }
 ): AsyncGenerator<CursorTextEvent> {
@@ -296,10 +311,103 @@ async function* streamCursorLocalSdkRunWithRetry(
     };
   }
 
-  if (input.requiresLocalTool && input.fallbackToolCall) {
-    yield { type: "tool_call", toolCall: input.fallbackToolCall };
-    yield { type: "done", finalText: "", toolCalls: [input.fallbackToolCall] };
+  for (const event of lastEvents) yield event;
+}
+
+async function* streamCursorLocalSdkBridgeRun(
+  env: Env,
+  deps: Deps,
+  apiKey: string,
+  input: {
+    agentId: string;
+    runId: string;
+    sessionKey: string;
+    prompt: string;
+    modelId: string;
+    workingDirectory?: string;
+    allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
+  }
+): AsyncGenerator<CursorTextEvent> {
+  const output = await cursorLocalSdkBridgeJson(env, deps, apiKey, input);
+  const text = typeof output.text === "string" ? output.text : "";
+  const toolCalls: CursorToolCall[] = [];
+  const rawToolCalls = Array.isArray(output.toolCalls) ? output.toolCalls : [];
+
+  if (text) yield { type: "text", text };
+
+  for (const rawToolCall of rawToolCalls) {
+    if (!rawToolCall || typeof rawToolCall.name !== "string") continue;
+    const toolCall = normalizeSdkToolCallForOpenCode({
+      name: rawToolCall.name,
+      arguments: isRecord(rawToolCall.arguments) ? rawToolCall.arguments : {}
+    });
+    if (!isEmittableSdkToolCall(toolCall)) continue;
+    const decision = input.allowToolCall?.(toolCall) ?? true;
+    if (decision !== true) {
+      yield { type: "rejected_tool_call", toolCall, reason: typeof decision === "string" ? decision : undefined };
+      yield { type: "done", finalText: text, toolCalls };
+      return;
+    }
+    toolCalls.push(toolCall);
+    yield { type: "tool_call", toolCall };
+    yield { type: "done", finalText: text, toolCalls };
     return;
+  }
+
+  yield { type: "done", finalText: text, toolCalls };
+}
+
+async function* streamCursorLocalSdkBridgeRunWithRetry(
+  env: Env,
+  deps: Deps,
+  apiKey: string,
+  input: {
+    agentId: string;
+    runId: string;
+    sessionKey: string;
+    prompt: string;
+    modelId: string;
+    workingDirectory?: string;
+    requiresLocalTool: boolean;
+    allowToolCall?: (toolCall: CursorToolCall) => ToolCallDecision;
+  }
+): AsyncGenerator<CursorTextEvent> {
+  if (!input.requiresLocalTool && !input.allowToolCall) {
+    yield* streamCursorLocalSdkBridgeRun(env, deps, apiKey, input);
+    return;
+  }
+
+  let attemptInput = input;
+  let lastEvents: CursorTextEvent[] = [];
+  for (let attempt = 1; attempt <= SDK_TOOL_RETRY_ATTEMPTS; attempt += 1) {
+    const events: CursorTextEvent[] = [];
+    let sawToolCall = false;
+    let rejectedToolCall: CursorToolCall | undefined;
+    let rejectedToolReason: string | undefined;
+    for await (const event of streamCursorLocalSdkBridgeRun(env, deps, apiKey, attemptInput)) {
+      events.push(event);
+      if (event.type === "tool_call") sawToolCall = true;
+      if (event.type === "rejected_tool_call") {
+        rejectedToolCall = event.toolCall;
+        rejectedToolReason = event.reason;
+      }
+    }
+
+    if (sawToolCall) {
+      for (const event of events) yield event;
+      return;
+    }
+
+    lastEvents = events;
+    const shouldRetry = rejectedToolCall || input.requiresLocalTool;
+    if (!shouldRetry || attempt >= SDK_TOOL_RETRY_ATTEMPTS) break;
+    attemptInput = {
+      ...input,
+      runId: newLocalSdkRunId(deps.randomUUID()),
+      prompt: rejectedToolCall
+        ? retryPromptAfterUnsupportedTool(input.prompt, rejectedToolCall, rejectedToolReason, attempt + 1, SDK_TOOL_RETRY_ATTEMPTS)
+        : retryPromptAfterMissingTool(input.prompt, attempt + 1, SDK_TOOL_RETRY_ATTEMPTS)
+    };
   }
 
   for (const event of lastEvents) yield event;
@@ -374,43 +482,99 @@ async function cursorLocalSdkRaw(
   return response;
 }
 
-async function cursorLocalSdkUrlBridgeRaw(
+async function cursorLocalSdkBridgeJson(
   env: Env,
   deps: Deps,
-  bridgeUrl: string,
-  accessToken: string,
-  requestId: string,
-  runFrame: Uint8Array,
-  workingDirectory?: string,
-  signal?: AbortSignal
-): Promise<Response> {
-  const response = await deps.fetch(bridgeUrl, {
-    method: "POST",
-    headers: cursorLocalSdkBridgeHeaders(env),
-    signal,
-    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame, workingDirectory))
+  apiKey: string,
+  input: {
+    agentId: string;
+    runId: string;
+    sessionKey: string;
+    prompt: string;
+    modelId: string;
+    workingDirectory?: string;
+  }
+): Promise<CursorSdkBridgeOutput> {
+  const body = JSON.stringify({
+    apiKey,
+    requestId: input.runId,
+    model: input.modelId,
+    prompt: input.prompt,
+    sessionKey: input.sessionKey || input.agentId,
+    workingDirectory: sdkWorkingDirectory(input.workingDirectory)
   });
-  return assertCursorLocalSdkBridgeResponse(response);
+  const bridgeBinding = env.CURSOR_SDK_BRIDGE_CONTAINER;
+  const bridgeUrl = env.CURSOR_SDK_BRIDGE_URL?.trim();
+  const response = bridgeBinding
+    ? await cursorLocalSdkContainerBridgeJson(env, bridgeBinding, body)
+    : bridgeUrl
+      ? await cursorLocalSdkUrlBridgeJson(env, deps, bridgeUrl, body)
+      : undefined;
+  if (!response) throw new HttpError("Cursor SDK bridge is not configured", 500, "cursor_sdk_bridge_missing");
+  return parseCursorLocalSdkBridgeJsonResponse(response);
 }
 
-async function cursorLocalSdkContainerBridgeRaw(
-  env: Env,
-  bridgeBinding: DurableObjectNamespace,
-  accessToken: string,
-  requestId: string,
-  runFrame: Uint8Array,
-  workingDirectory?: string,
-  signal?: AbortSignal
-): Promise<Response> {
-  const bridgeId = bridgeBinding.idFromName("shared");
-  const bridge = bridgeBinding.get(bridgeId);
-  const response = await bridge.fetch("http://cursor-sdk-bridge.local/sdk", {
+async function cursorLocalSdkUrlBridgeJson(env: Env, deps: Deps, bridgeUrl: string, body: string): Promise<Response> {
+  return deps.fetch(bridgeUrl, {
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
-    signal,
-    body: JSON.stringify(cursorLocalSdkBridgePayload(env, accessToken, requestId, runFrame, workingDirectory))
+    body
   });
-  return assertCursorLocalSdkBridgeResponse(response);
+}
+
+async function cursorLocalSdkContainerBridgeJson(env: Env, bridgeBinding: DurableObjectNamespace, body: string): Promise<Response> {
+  const bridgeId = bridgeBinding.idFromName("shared");
+  const bridge = bridgeBinding.get(bridgeId);
+  return bridge.fetch("http://cursor-sdk-bridge.local/sdk", {
+    method: "POST",
+    headers: cursorLocalSdkBridgeHeaders(env),
+    body
+  });
+}
+
+async function parseCursorLocalSdkBridgeJsonResponse(response: Response): Promise<CursorSdkBridgeOutput> {
+  const text = await response.text().catch(() => "");
+  let object: unknown;
+  if (text.trim()) {
+    try {
+      object = JSON.parse(text);
+    } catch {
+      throw new HttpError("Cursor SDK bridge returned invalid JSON", 502, "cursor_sdk_bridge_invalid_json");
+    }
+  } else {
+    object = {};
+  }
+  if (!response.ok) {
+    const error = isRecord(object) && isRecord(object.error) ? object.error : undefined;
+    const message = typeof error?.message === "string" && error.message
+      ? error.message
+      : `Cursor SDK bridge failed with status ${response.status}`;
+    const code = typeof error?.code === "string" && error.code ? error.code : "cursor_sdk_bridge_error";
+    const status = response.status === 401 ? 502 : response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
+    throw new HttpError(message, status, code);
+  }
+  if (!isRecord(object)) {
+    throw new HttpError("Cursor SDK bridge returned invalid JSON", 502, "cursor_sdk_bridge_invalid_json");
+  }
+  return {
+    text: typeof object.text === "string" ? object.text : "",
+    toolCalls: Array.isArray(object.toolCalls) ? object.toolCalls.flatMap(cursorToolCallFromJson) : [],
+    agentID: typeof object.agentID === "string" ? object.agentID : undefined,
+    runID: typeof object.runID === "string" ? object.runID : undefined,
+    status: typeof object.status === "string" ? object.status : undefined
+  };
+}
+
+function cursorToolCallFromJson(value: unknown): CursorToolCall[] {
+  if (!isRecord(value) || typeof value.name !== "string" || !value.name.trim()) return [];
+  return [{
+    name: value.name.trim(),
+    arguments: isRecord(value.arguments) ? value.arguments : {}
+  }];
+}
+
+function hasCursorSdkBridge(env: Env): boolean {
+  return Boolean(env.CURSOR_SDK_BRIDGE_CONTAINER || env.CURSOR_SDK_BRIDGE_URL?.trim());
 }
 
 function cursorLocalSdkBridgeHeaders(env: Env): Headers {
@@ -421,38 +585,6 @@ function cursorLocalSdkBridgeHeaders(env: Env): Headers {
     headers.set("Authorization", `Bearer ${env.CURSOR_SDK_BRIDGE_TOKEN.trim()}`);
   }
   return headers;
-}
-
-function cursorLocalSdkBridgePayload(
-  env: Env,
-  accessToken: string,
-  requestId: string,
-  runFrame: Uint8Array,
-  workingDirectory?: string
-): Record<string, string> {
-  const backendBaseUrl = env.CURSOR_BACKEND_BASE_URL?.trim();
-  if (!backendBaseUrl) throw new HttpError("Cursor backend URL is not configured", 500, "cursor_missing_backend_url");
-  const sdkCwd = sdkWorkingDirectory(workingDirectory);
-  return {
-    accessToken,
-    requestId,
-    backendBaseUrl,
-    localAgentEndpoint: cursorLocalSdkEndpoint(env),
-    clientVersion: env.CURSOR_SDK_CLIENT_VERSION || DEFAULT_SDK_CLIENT_VERSION,
-    runFrame: bytesToBase64(runFrame),
-    ...(sdkCwd !== "." ? { workingDirectory: sdkCwd } : {})
-  };
-}
-
-async function assertCursorLocalSdkBridgeResponse(response: Response): Promise<Response> {
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    const parsed = parseCursorSdkError(text);
-    const message = response.status === 401 ? "Cursor SDK bridge rejected the request" : parsed.message || `Cursor SDK bridge failed with status ${response.status}`;
-    const status = response.status === 401 ? 502 : response.status === 429 ? 429 : response.status >= 500 ? 502 : 400;
-    throw new HttpError(message, status, parsed.code || "cursor_sdk_bridge_error");
-  }
-  return response;
 }
 
 async function writeSdkUpload(writer: WritableStreamDefaultWriter<Uint8Array>, frame: Uint8Array): Promise<void> {
@@ -1142,12 +1274,6 @@ function concatBytes(a: Uint8Array<ArrayBufferLike>, b: Uint8Array<ArrayBufferLi
 
 function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -91,20 +91,20 @@ fi
 
 cleanup() {
   for file in "${TEMP_FILES[@]+"${TEMP_FILES[@]}"}"; do
-    rm -f "$file"
+    rm -f "$file" || true
   done
   for dir in "${TEMP_DIRS[@]+"${TEMP_DIRS[@]}"}"; do
-    rm -rf "$dir"
+    rm -rf "$dir" || true
   done
   if [ "$KEEP_RUNNING" -eq 0 ]; then
     osascript -e 'tell application id "ai.standardagents.cursorapi" to quit' >/dev/null 2>&1 || true
-    pkill -f 'cursor-sdk-opencode-bridge.mjs' >/dev/null 2>&1 || true
+    pkill -f 'cursor-sdk-local-agent-bridge.mjs' >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 osascript -e 'tell application id "ai.standardagents.cursorapi" to quit' >/dev/null 2>&1 || true
-pkill -f 'cursor-sdk-opencode-bridge.mjs' >/dev/null 2>&1 || true
+pkill -f 'cursor-sdk-local-agent-bridge.mjs' >/dev/null 2>&1 || true
 sleep 0.5
 
 smoke_output="$(mktemp "${TMPDIR:-/tmp}/api-for-cursor-live-app.XXXXXX")"
@@ -189,7 +189,7 @@ responses_content="$(post_json "/responses" "$responses_body" | extract_response
 
 bridge_process_count() {
   ps ax -o command= \
-    | grep -F "cursor-sdk-opencode-bridge.mjs" \
+    | grep -F "cursor-sdk-local-agent-bridge.mjs" \
     | grep -F "$APP_PATH/Contents/Resources/" \
     | grep -v grep \
     | wc -l \
@@ -244,10 +244,8 @@ verify_deep_opencode_todo_app() {
   grep -F '"react"' "$deep_project/package.json" >/dev/null || fail "OpenCode deep build package.json does not declare React"
   grep -F '"build"' "$deep_project/package.json" >/dev/null || fail "OpenCode deep build package.json does not declare a build script"
 
-  if [ ! -d "$deep_project/node_modules" ]; then
-    (cd "$deep_project" && npm install --no-audit --fund=false) >"$deep_build_output" 2>&1 \
-      || { cat "$deep_build_output"; fail "OpenCode deep build dependencies could not be installed"; }
-  fi
+  (cd "$deep_project" && npm install --no-audit --fund=false) >"$deep_build_output" 2>&1 \
+    || { cat "$deep_build_output"; fail "OpenCode deep build dependencies could not be installed"; }
   (cd "$deep_project" && npm run build) >"$deep_build_output" 2>&1 \
     || { cat "$deep_build_output"; fail "OpenCode deep Vite/React app did not build"; }
 
