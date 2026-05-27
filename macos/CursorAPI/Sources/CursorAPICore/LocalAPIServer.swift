@@ -266,15 +266,22 @@ public final class LocalAPIServer: @unchecked Sendable {
                 return try .response(withCORS(HTTPResponse.json(OpenAICompatibility.chatCompletionResponse(id: id, created: created, prepared: prepared, output: output))))
             }
             if method == "POST", path == "/v1/responses" {
+                let currentResponseInputItems = try OpenAICompatibility.responseInputItems(from: request.body)
+                var responseContextInputItems = currentResponseInputItems
                 var prepared = try OpenAICompatibility.prepareResponsesRequest(request.body)
                 if let previousResponseID = prepared.previousResponseID {
                     guard await responseSessions.knowsResponse(responseID: previousResponseID) else {
                         throw CursorAPIError.notFound
                     }
                     let rememberedToolCalls = await responseSessions.responseToolCalls(responseID: previousResponseID)
-                    if !rememberedToolCalls.isEmpty {
-                        prepared = try OpenAICompatibility.prepareResponsesRequest(request.body, rememberedToolCalls: rememberedToolCalls)
-                    }
+                    let previousContextItemsData = await responseSessions.responseContextInputItemsData(responseID: previousResponseID)
+                    responseContextInputItems = OpenAICompatibility.responseContextInputItems(
+                        previousContextItemsData: previousContextItemsData,
+                        currentInputItems: currentResponseInputItems
+                    )
+                    let promptBody = try OpenAICompatibility.responseRequestBody(request.body, replacingInputWith: responseContextInputItems)
+                    prepared = try OpenAICompatibility.prepareResponsesRequest(promptBody, rememberedToolCalls: rememberedToolCalls)
+                    prepared.responseInputItems = currentResponseInputItems
                 }
                 let settings = settingsProvider()
                 try harness.validate(settings: settings, authorization: request.header("authorization"))
@@ -289,7 +296,14 @@ public final class LocalAPIServer: @unchecked Sendable {
                     return .stream(HTTPStreamResponse(
                         status: 200,
                         headers: streamingHeaders(),
-                        chunks: responseChunks(id: id, created: created, prepared: prepared, settings: settings, authorization: request.header("authorization"))
+                        chunks: responseChunks(
+                            id: id,
+                            created: created,
+                            prepared: prepared,
+                            responseContextInputItems: responseContextInputItems,
+                            settings: settings,
+                            authorization: request.header("authorization")
+                        )
                     ))
                 }
                 let output = try await harness.complete(prepared: prepared, settings: settings, authorization: request.header("authorization"))
@@ -299,6 +313,11 @@ public final class LocalAPIServer: @unchecked Sendable {
                     responseID: id,
                     toolCalls: OpenAICompatibility.responseToolCallMemory(id: id, prepared: prepared, output: output)
                 )
+                let contextInputItems = try JSONSerialization.data(
+                    withJSONObject: OpenAICompatibility.responseContextInputItemsObject(inputItems: responseContextInputItems, response: responseObject),
+                    options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                )
+                await responseSessions.storeResponseContext(responseID: id, inputItemsData: contextInputItems)
                 if prepared.storeResponse {
                     let inputItems = try JSONSerialization.data(
                         withJSONObject: OpenAICompatibility.responseInputItemsObject(prepared.responseInputItems),
@@ -467,6 +486,7 @@ public final class LocalAPIServer: @unchecked Sendable {
         id: String,
         created: Int,
         prepared: PreparedChatRequest,
+        responseContextInputItems: [JSONValue],
         settings: CursorAPISettings,
         authorization: String?
     ) -> AsyncThrowingStream<Data, any Error> {
@@ -547,6 +567,12 @@ public final class LocalAPIServer: @unchecked Sendable {
                         responseID: id,
                         toolCalls: OpenAICompatibility.responseToolCallMemory(id: id, prepared: prepared, output: output)
                     )
+                    if let contextInputItemsData = try? JSONSerialization.data(
+                        withJSONObject: OpenAICompatibility.responseContextInputItemsObject(inputItems: responseContextInputItems, response: completedResponse),
+                        options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                    ) {
+                        await responseSessions.storeResponseContext(responseID: id, inputItemsData: contextInputItemsData)
+                    }
                     if prepared.storeResponse,
                        let responseData = try? JSONSerialization.data(withJSONObject: completedResponse, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
                        let inputItemsData = try? JSONSerialization.data(
@@ -895,6 +921,7 @@ private actor LocalResponseSessionStore {
     private var responseSessions: [String: String] = [:]
     private var storedResponses: [String: Data] = [:]
     private var storedResponseInputItems: [String: Data] = [:]
+    private var storedResponseContextInputItems: [String: Data] = [:]
     private var storedResponseToolCalls: [String: [String: ResponseToolCallMemory]] = [:]
 
     init(maxEntries: Int) {
@@ -925,6 +952,12 @@ private actor LocalResponseSessionStore {
         evictIfNeeded()
     }
 
+    func storeResponseContext(responseID: String, inputItemsData: Data) {
+        storedResponseContextInputItems[responseID] = inputItemsData
+        touch(responseID)
+        evictIfNeeded()
+    }
+
     func storeToolCalls(responseID: String, toolCalls: [String: ResponseToolCallMemory]) {
         guard !toolCalls.isEmpty else { return }
         storedResponseToolCalls[responseID] = toolCalls
@@ -944,6 +977,12 @@ private actor LocalResponseSessionStore {
         return data
     }
 
+    func responseContextInputItemsData(responseID: String) -> Data? {
+        guard let data = storedResponseContextInputItems[responseID] else { return nil }
+        touch(responseID)
+        return data
+    }
+
     func responseToolCalls(responseID: String) -> [String: ResponseToolCallMemory] {
         guard let toolCalls = storedResponseToolCalls[responseID] else { return [:] }
         touch(responseID)
@@ -954,6 +993,7 @@ private actor LocalResponseSessionStore {
         let exists = responseSessions[responseID] != nil
             || storedResponses[responseID] != nil
             || storedResponseInputItems[responseID] != nil
+            || storedResponseContextInputItems[responseID] != nil
             || storedResponseToolCalls[responseID] != nil
         if exists {
             touch(responseID)
@@ -965,10 +1005,12 @@ private actor LocalResponseSessionStore {
         let existed = responseSessions[responseID] != nil
             || storedResponses[responseID] != nil
             || storedResponseInputItems[responseID] != nil
+            || storedResponseContextInputItems[responseID] != nil
             || storedResponseToolCalls[responseID] != nil
         responseSessions.removeValue(forKey: responseID)
         storedResponses.removeValue(forKey: responseID)
         storedResponseInputItems.removeValue(forKey: responseID)
+        storedResponseContextInputItems.removeValue(forKey: responseID)
         storedResponseToolCalls.removeValue(forKey: responseID)
         responseOrder.removeAll { $0 == responseID }
         return existed
@@ -997,6 +1039,7 @@ private actor LocalResponseSessionStore {
             responseSessions.removeValue(forKey: evicted)
             storedResponses.removeValue(forKey: evicted)
             storedResponseInputItems.removeValue(forKey: evicted)
+            storedResponseContextInputItems.removeValue(forKey: evicted)
             storedResponseToolCalls.removeValue(forKey: evicted)
         }
     }

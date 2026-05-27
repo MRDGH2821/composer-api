@@ -1228,22 +1228,31 @@ final class LocalAPIServerTests: XCTestCase {
         let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
         let callID = try XCTUnwrap(functionCall["call_id"] as? String)
 
-        _ = try await postResponse(port: port, body: #"""
+        let second = try await postResponse(port: port, body: #"""
         {
           "model":"composer-2.5",
           "previous_response_id":"\#(firstID)",
           "input":[{"type":"function_call_output","call_id":"\#(callID)","output":"/tmp/project"}]
         }
         """#)
+        let secondID = try XCTUnwrap(second["id"] as? String)
 
         let prompts = await recorder.prompts()
         XCTAssertEqual(prompts.count, 2)
+        XCTAssertTrue(prompts[1].contains("USER: run pwd"))
+        XCTAssertTrue(prompts[1].contains("ASSISTANT FUNCTION_CALL:"))
         XCTAssertTrue(prompts[1].contains("FUNCTION CALL OUTPUT (name=bash call_id=\(callID))"))
         XCTAssertTrue(prompts[1].contains("LOCAL TOOL RESULT"))
         XCTAssertTrue(prompts[1].contains("bash"))
         XCTAssertTrue(prompts[1].contains("command"))
         XCTAssertTrue(prompts[1].contains("pwd"))
         XCTAssertTrue(prompts[1].contains("/tmp/project"))
+
+        let (inputItemsStatus, inputItemsObject) = try await getResponseInputItems(port: port, responseID: secondID)
+        XCTAssertEqual(inputItemsStatus, 200)
+        let storedInputItems = try XCTUnwrap(inputItemsObject?["data"] as? [[String: Any]])
+        XCTAssertEqual(storedInputItems.count, 1)
+        XCTAssertEqual(storedInputItems.first?["type"] as? String, "function_call_output")
     }
 
     func testResponsesProjectMetadataSeparatesAndReusesSDKSessions() async throws {

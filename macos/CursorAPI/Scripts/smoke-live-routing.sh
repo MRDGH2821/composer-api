@@ -207,6 +207,63 @@ process.stdin.on("end", () => {
 '
 }
 
+extract_response_bash_tool_call_summary() {
+  "$JS_RUNTIME" -e '
+let body = "";
+process.stdin.on("data", (chunk) => body += chunk);
+process.stdin.on("end", () => {
+  const json = JSON.parse(body);
+  const call = (json.output || []).find((item) => item && item.type === "function_call");
+  if (!call) process.exit(2);
+  const args = typeof call.arguments === "string" ? JSON.parse(call.arguments || "{}") : (call.arguments || {});
+  process.stdout.write([
+    json.id || "",
+    call.call_id || call.id || "",
+    call.name || "",
+    args.command || ""
+  ].join("\n"));
+});
+'
+}
+
+build_responses_tool_followup_body() {
+  "$JS_RUNTIME" -e '
+let body = "";
+process.stdin.on("data", (chunk) => body += chunk);
+process.stdin.on("end", () => {
+  const json = JSON.parse(body);
+  const call = (json.output || []).find((item) => item && item.type === "function_call");
+  if (!call) process.exit(2);
+  process.stdout.write(JSON.stringify({
+    model: "composer-2.5-fast",
+    previous_response_id: json.id,
+    input: [
+      {
+        type: "function_call_output",
+        call_id: call.call_id || call.id,
+        output: "(no output)"
+      }
+    ],
+    tools: [
+      {
+        type: "function",
+        name: "bash",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+            description: { type: "string" },
+            workdir: { type: "string" }
+          },
+          required: ["command"]
+        }
+      }
+    ]
+  }));
+});
+'
+}
+
 extract_stream_text() {
   "$JS_RUNTIME" -e '
 let body = "";
@@ -297,6 +354,19 @@ echo "Verified direct chat tool-result continuation through API for Cursor."
 responses_body='{"model":"composer-2.5-fast","input":"Reply exactly: hello","stream":false}'
 responses_content="$(post_json "/responses" "$responses_body" | extract_response_text)"
 [ "$responses_content" = "hello" ] || fail "Responses API returned '$responses_content', expected hello"
+
+responses_tool_body='{"model":"composer-2.5-fast","input":"Use the bash tool to run exactly: printf LIVE_RESPONSES_TOOL_OK. After the function_call_output, reply exactly LIVE_RESPONSES_TOOL_DONE.","stream":false,"tool_choice":{"type":"function","name":"bash"},"tools":[{"type":"function","name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"},"workdir":{"type":"string"}},"required":["command"]}}]}'
+responses_tool_response="$(post_json "/responses" "$responses_tool_body")"
+responses_tool_summary="$(printf '%s' "$responses_tool_response" | extract_response_bash_tool_call_summary)"
+case "$responses_tool_summary" in
+  *$'\n'bash$'\n'*LIVE_RESPONSES_TOOL_OK*) ;;
+  *) fail "Responses API tool call mapping returned unexpected summary: $responses_tool_summary" ;;
+esac
+responses_tool_followup_body="$(printf '%s' "$responses_tool_response" | build_responses_tool_followup_body)"
+responses_tool_followup_content="$(post_json "/responses" "$responses_tool_followup_body" | extract_response_text)"
+[ "$responses_tool_followup_content" = "LIVE_RESPONSES_TOOL_DONE" ] \
+  || fail "Responses API tool-result continuation returned '$responses_tool_followup_content', expected LIVE_RESPONSES_TOOL_DONE"
+echo "Verified direct Responses tool-result continuation through API for Cursor."
 
 command_enum_responses_body='{"model":"composer-2.5-fast","input":"Create src/live-command-enum.txt containing exactly: live command enum ok","tools":[{"type":"function","name":"workspace_file","parameters":{"type":"object","properties":{"operation":{"type":"string","enum":["read_file","create_file","replace_text","delete_file"]},"filePath":{"type":"string"},"content":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["operation","filePath"],"additionalProperties":false}}]}'
 command_enum_responses_summary="$(post_json "/responses" "$command_enum_responses_body" | extract_response_function_call_summary)"

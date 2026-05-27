@@ -413,6 +413,31 @@ public enum OpenAICompatibility {
         ]
     }
 
+    public static func responseInputItems(from body: Data) throws -> [JSONValue] {
+        let raw = try jsonObject(body)
+        return normalizedResponseInputItems(raw["input"])
+    }
+
+    public static func responseRequestBody(_ body: Data, replacingInputWith inputItems: [JSONValue]) throws -> Data {
+        var raw = try jsonObject(body)
+        raw["input"] = inputItems.map(\.foundationValue)
+        return try JSONSerialization.data(withJSONObject: raw, options: [.withoutEscapingSlashes])
+    }
+
+    public static func responseContextInputItems(previousContextItemsData: Data?, currentInputItems: [JSONValue]) -> [JSONValue] {
+        var inputItems = responseListItems(from: previousContextItemsData)
+        inputItems.append(contentsOf: currentInputItems)
+        return inputItems
+    }
+
+    public static func responseContextInputItemsObject(inputItems: [JSONValue], response: [String: Any]) -> [String: Any] {
+        var contextItems = inputItems
+        if let outputItems = response["output"] as? [[String: Any]] {
+            contextItems.append(contentsOf: outputItems.map { .object($0.mapValues(JSONValue.from)) })
+        }
+        return responseInputItemsObject(contextItems)
+    }
+
     public static func responseInputTokenCountObject(_ body: Data) throws -> [String: Any] {
         let prepared = try prepareResponsesRequest(body)
         return [
@@ -875,6 +900,15 @@ public enum OpenAICompatibility {
             throw CursorAPIError.badRequest("Request body must be a JSON object.")
         }
         return record
+    }
+
+    private static func responseListItems(from data: Data?) -> [JSONValue] {
+        guard let data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = root["data"] as? [[String: Any]] else {
+            return []
+        }
+        return items.map { .object($0.mapValues(JSONValue.from)) }
     }
 
     private static func streamIncludeUsage(_ raw: [String: Any]) -> Bool {
