@@ -3021,6 +3021,51 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertTrue((toolCalls ?? []).isEmpty)
     }
 
+    func testChatToolCallsDoNotMapExactSDKEditNameToIncompatibleSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"edit files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"edit",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "path":{"type":"string"},
+                    "search":{"type":"string"}
+                  },
+                  "required":["path","search"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "edit", arguments: [
+                "path": .string("src/App.tsx"),
+                "oldString": .string("Hello"),
+                "newString": .string("Hi")
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = message["tool_calls"] as? [[String: Any]]
+        XCTAssertTrue((toolCalls ?? []).isEmpty)
+    }
+
     func testChatToolCallsExpandNestedSDKArgumentsBeforeSchemaMapping() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

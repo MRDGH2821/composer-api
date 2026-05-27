@@ -1654,6 +1654,8 @@ function serializedToolCallLength(toolCalls: OpenAiToolCall[]): number {
   return toolCalls.reduce((sum, toolCall) => sum + toolCall.function.name.length + toolCall.function.arguments.length, 0);
 }
 
+const KNOWN_SDK_CANONICAL_TOOLS = new Set(["shell", "write", "read", "edit", "delete", "grep", "glob", "ls", "readlints", "mcp", "semsearch", "todowrite"]);
+
 function resolveToolSpec(emittedName: string, args: Record<string, unknown>, tools: OpenAiToolSpec[]): OpenAiToolSpec | undefined {
   const exact = tools.find((tool) => tool.name === emittedName);
   if (exact && nameMatchedToolCanAccept(emittedName, exact)) return exact;
@@ -1688,7 +1690,7 @@ function nameMatchedToolCanAccept(emittedName: string, tool: OpenAiToolSpec): bo
 }
 
 function isKnownSdkCanonical(value: string): boolean {
-  return new Set(["shell", "write", "read", "edit", "delete", "grep", "glob", "ls", "readlints", "mcp", "semsearch", "todowrite"]).has(value);
+  return KNOWN_SDK_CANONICAL_TOOLS.has(value);
 }
 
 function normalizeToolName(value: string): string {

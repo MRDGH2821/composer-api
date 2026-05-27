@@ -902,6 +902,29 @@ describe("OpenAI compatibility adapter", () => {
     expect(toolCalls).toEqual([]);
   });
 
+  it("does not map exact SDK edit names to incompatible schemas", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "edit",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string" },
+              search: { type: "string" }
+            },
+            required: ["path", "search"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "edit", arguments: { path: "src/App.tsx", oldString: "Hello", newString: "Hi" } }]
+    });
+
+    expect(toolCalls).toEqual([]);
+  });
+
   it("maps SDK ls calls to glob tools when a client has no ls tool", () => {
     const toolCalls = toOpenAiToolCalls({
       responseId: "chatcmpl_test",

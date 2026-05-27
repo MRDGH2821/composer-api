@@ -1569,9 +1569,9 @@ public enum OpenAICompatibility {
     }
 
     private static func resolveToolSpec(_ name: String, arguments: [String: JSONValue], tools: [OpenAIToolSpec]) -> OpenAIToolSpec? {
-        if let exact = tools.first(where: { $0.name == name }) { return exact }
+        if let exact = tools.first(where: { $0.name == name && nameMatchedToolCanAccept(sdkToolName: name, tool: $0) }) { return exact }
         let normalized = normalizedName(name)
-        if let caseInsensitive = tools.first(where: { normalizedName($0.name) == normalized }) {
+        if let caseInsensitive = tools.first(where: { normalizedName($0.name) == normalized && nameMatchedToolCanAccept(sdkToolName: name, tool: $0) }) {
             return caseInsensitive
         }
 
@@ -1603,6 +1603,31 @@ public enum OpenAICompatibility {
         }
 
         return nil
+    }
+
+    private static func nameMatchedToolCanAccept(sdkToolName: String, tool: OpenAIToolSpec) -> Bool {
+        guard isKnownSDKCanonical(canonicalToolName(sdkToolName)) else { return true }
+        guard !parameterPropertyNames(tool).isEmpty else { return true }
+        return schemaLooksCompatible(sdkToolName: sdkToolName, tool: tool)
+    }
+
+    private static let knownSDKCanonicalTools: Set<String> = [
+        "shell",
+        "write",
+        "read",
+        "edit",
+        "delete",
+        "grep",
+        "glob",
+        "ls",
+        "readlints",
+        "mcp",
+        "semsearch",
+        "todowrite"
+    ]
+
+    private static func isKnownSDKCanonical(_ name: String) -> Bool {
+        knownSDKCanonicalTools.contains(name)
     }
 
     private static func resolveSpecificMCPTool(arguments: [String: JSONValue], tools: [OpenAIToolSpec]) -> OpenAIToolSpec? {
