@@ -688,4 +688,35 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "*" });
   });
+
+  it("does not emit SDK-native tool names outside the advertised client tools", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "notify",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: { message: { type: "string" } },
+            required: ["message"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "shell", arguments: { command: "pwd" } }]
+    });
+
+    expect(toolCalls).toEqual([]);
+  });
+
+  it("keeps raw SDK tool calls only when the client did not provide a tool inventory", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [],
+      toolCalls: [{ name: "shell", arguments: { command: "pwd" } }]
+    });
+
+    expect(toolCalls[0].function.name).toBe("shell");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ command: "pwd" });
+  });
 });

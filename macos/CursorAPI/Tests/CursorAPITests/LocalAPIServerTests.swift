@@ -2631,7 +2631,7 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(todos.first?["priority"] as? String, "medium")
     }
 
-    func testFunctionCallsPreserveSDKToolWhenNoClientToolMatches() throws {
+    func testFunctionCallsDropSDKToolWhenNoClientToolMatches() throws {
         let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
         {
           "model":"composer-2.5",
@@ -2649,11 +2649,10 @@ final class LocalAPIServerTests: XCTestCase {
         )
 
         let output = try XCTUnwrap(object["output"] as? [[String: Any]])
-        let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
-        let arguments = try decodedArguments(functionCall)
+        let message = try XCTUnwrap(output.first { ($0["type"] as? String) == "message" })
 
-        XCTAssertEqual(functionCall["name"] as? String, "shell")
-        XCTAssertEqual(arguments["command"] as? String, "pwd")
+        XCTAssertNil(output.first { ($0["type"] as? String) == "function_call" })
+        XCTAssertEqual(message["role"] as? String, "assistant")
     }
 
     func testChatCompletionsStreamingSuppressesTextBeforeToolCall() async throws {

@@ -131,7 +131,8 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             settings: settings,
             onEvent: { buffered.append($0) }
         )
-        if !first.toolCalls.isEmpty {
+        let unsupportedToolCall = first.toolCalls.first { !OpenAICompatibility.canMapToolCall($0, tools: prepared.tools) }
+        if !first.toolCalls.isEmpty, unsupportedToolCall == nil {
             for event in buffered.events() {
                 onEvent(event)
             }
@@ -139,7 +140,8 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
         }
 
         var retry = prepared
-        retry.prompt = retryPrompt(afterMissingToolAttempt: prepared)
+        retry.prompt = unsupportedToolCall.map { retryPrompt(afterUnsupportedToolCall: $0, prepared: prepared) }
+            ?? retryPrompt(afterMissingToolAttempt: prepared)
         retry.promptCharacters = retry.prompt.count
         return try await runSDKRequest(
             agentID: agentID,
@@ -163,6 +165,18 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
             "Your previous SDK response did not emit a local tool call, but the latest user request requires local execution.",
             "Do not answer in prose. Emit exactly one SDK tool call now using the allowed client tool inventory above, then wait for the local tool result.",
             "If a specific client tool was named in the request, use that exact tool mapping and do not substitute shell, glob, or prose."
+        ].joined(separator: "\n")
+    }
+
+    private func retryPrompt(afterUnsupportedToolCall toolCall: CursorToolCall, prepared: PreparedChatRequest) -> String {
+        [
+            prepared.prompt,
+            "",
+            "TOOL CALL RETRY:",
+            "Your previous SDK response requested \(toolCall.name), but that tool could not be mapped to the allowed client tool inventory above.",
+            "Do not answer in prose. Emit exactly one SDK tool call that maps to an allowed client tool.",
+            "For filesystem mutations, prefer SDK write with path and fileText or SDK shell with command when those capabilities are present.",
+            "For OpenCode MCP/server tools exposed as provider_tool names, use SDK mcp with providerIdentifier, toolName, and args."
         ].joined(separator: "\n")
     }
 

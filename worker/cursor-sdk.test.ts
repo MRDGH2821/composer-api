@@ -71,6 +71,18 @@ describe("Cursor SDK harness", () => {
     expect(prompt).toContain("Do not answer in prose");
     expect(prompt).toContain("Emit exactly one SDK tool call");
   });
+
+  it("builds a retry prompt when the SDK chooses an unmapped tool", () => {
+    const prompt = cursorSdkTestExports.retryPromptAfterUnsupportedTool("Original prompt", {
+      name: "shell",
+      arguments: { command: "pwd" }
+    });
+
+    expect(prompt).toContain("Original prompt");
+    expect(prompt).toContain("shell");
+    expect(prompt).toContain("could not be mapped");
+    expect(prompt).toContain("allowed OpenCode tool inventory");
+  });
 });
 
 function protoMessage(parts: Uint8Array[]): Uint8Array {

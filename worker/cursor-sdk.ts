@@ -88,6 +88,7 @@ export async function createCursorSdkCompletion(
     sessionKey?: string;
     sessionOwnerKey?: string;
     requiresLocalTool?: boolean;
+    allowToolCall?: (toolCall: CursorToolCall) => boolean;
   }
 ): Promise<CursorSdkCompletion> {
   const accessToken = await exchangeCursorApiKey(env, deps, apiKey);
@@ -110,7 +111,8 @@ export async function createCursorSdkCompletion(
       runId,
       prompt: sdkPrompt(input.prompt),
       modelId: input.model?.id || "composer-2.5",
-      requiresLocalTool: input.requiresLocalTool === true
+      requiresLocalTool: input.requiresLocalTool === true,
+      allowToolCall: input.allowToolCall
     })
   };
 }
@@ -138,14 +140,15 @@ export const cursorSdkTestExports = {
   encodeAgentClientRunRequest,
   isEmittableSdkToolCall,
   normalizeSdkToolCallForOpenCode,
-  retryPromptAfterMissingTool
+  retryPromptAfterMissingTool,
+  retryPromptAfterUnsupportedTool
 };
 
 async function* streamCursorLocalSdkRun(
   env: Env,
   deps: Deps,
   accessToken: string,
-  input: { agentId: string; runId: string; prompt: string; modelId: string }
+  input: { agentId: string; runId: string; prompt: string; modelId: string; allowToolCall?: (toolCall: CursorToolCall) => boolean }
 ): AsyncGenerator<CursorTextEvent> {
   let text = "";
   const toolCalls: CursorToolCall[] = [];
@@ -194,6 +197,11 @@ async function* streamCursorLocalSdkRun(
           if (!isEmittableSdkToolCall(event.toolCall)) {
             continue;
           }
+          if (input.allowToolCall && !input.allowToolCall(event.toolCall)) {
+            yield { type: "rejected_tool_call", toolCall: event.toolCall };
+            yield { type: "done", finalText: text, toolCalls };
+            return;
+          }
           if (!emittedToolCallIds.has(event.id)) {
             emittedToolCallIds.add(event.id);
             toolCalls.push(event.toolCall);
@@ -223,7 +231,14 @@ async function* streamCursorLocalSdkRunWithRetry(
   env: Env,
   deps: Deps,
   accessToken: string,
-  input: { agentId: string; runId: string; prompt: string; modelId: string; requiresLocalTool: boolean }
+  input: {
+    agentId: string;
+    runId: string;
+    prompt: string;
+    modelId: string;
+    requiresLocalTool: boolean;
+    allowToolCall?: (toolCall: CursorToolCall) => boolean;
+  }
 ): AsyncGenerator<CursorTextEvent> {
   if (!input.requiresLocalTool) {
     yield* streamCursorLocalSdkRun(env, deps, accessToken, input);
@@ -232,9 +247,11 @@ async function* streamCursorLocalSdkRunWithRetry(
 
   const firstEvents: CursorTextEvent[] = [];
   let sawToolCall = false;
+  let rejectedToolCall: CursorToolCall | undefined;
   for await (const event of streamCursorLocalSdkRun(env, deps, accessToken, input)) {
     firstEvents.push(event);
     if (event.type === "tool_call") sawToolCall = true;
+    if (event.type === "rejected_tool_call") rejectedToolCall = event.toolCall;
   }
   if (sawToolCall) {
     for (const event of firstEvents) yield event;
@@ -244,7 +261,9 @@ async function* streamCursorLocalSdkRunWithRetry(
   yield* streamCursorLocalSdkRun(env, deps, accessToken, {
     ...input,
     runId: newLocalSdkRunId(deps.randomUUID()),
-    prompt: retryPromptAfterMissingTool(input.prompt)
+    prompt: rejectedToolCall
+      ? retryPromptAfterUnsupportedTool(input.prompt, rejectedToolCall)
+      : retryPromptAfterMissingTool(input.prompt)
   });
 }
 
@@ -256,6 +275,18 @@ function retryPromptAfterMissingTool(prompt: string): string {
     "Your previous SDK response did not emit a local tool call, but the latest user request requires local OpenCode execution.",
     "Do not answer in prose. Emit exactly one SDK tool call now using the allowed OpenCode tool inventory above, then wait for the local tool result.",
     "If a specific client tool was named in the request, use that exact tool mapping and do not substitute shell, glob, or prose."
+  ].join("\n");
+}
+
+function retryPromptAfterUnsupportedTool(prompt: string, toolCall: CursorToolCall): string {
+  return [
+    prompt,
+    "",
+    "TOOL CALL RETRY:",
+    `Your previous SDK response requested ${toolCall.name}, but that tool could not be mapped to the allowed OpenCode tool inventory above.`,
+    "Do not answer in prose. Emit exactly one SDK tool call that maps to an allowed client tool.",
+    "For filesystem mutations, prefer SDK write with path and fileText or SDK shell with command when those capabilities are present.",
+    "For OpenCode MCP/server tools exposed as provider_tool names, use SDK mcp with providerIdentifier, toolName, and args."
   ].join("\n");
 }
 

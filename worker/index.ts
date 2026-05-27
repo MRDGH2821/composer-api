@@ -324,7 +324,13 @@ async function handleOpenCodeSdkChatRoute(
       model: prepared.cursorModel,
       sessionKey: sessionAffinity(request),
       sessionOwnerKey: sdkSessionOwner(auth),
-      requiresLocalTool: prepared.requiresLocalTool
+      requiresLocalTool: prepared.requiresLocalTool,
+      allowToolCall: (toolCall) =>
+        toOpenAiToolCalls({
+          toolCalls: [toolCall],
+          tools: prepared.tools,
+          responseId: "probe"
+        }).length > 0
     });
 
     if (prepared.stream) {
@@ -442,15 +448,16 @@ function streamOpenAiEvents(
           else await writer.write(responseDeltaEvent({ id: input.id, delta: event.text }));
         }
         if (event.type === "tool_call") {
-          finishReason = "tool_calls";
           const [toolCall] = toOpenAiToolCalls({
             toolCalls: [event.toolCall],
             tools: input.tools,
             responseId: input.id,
             startIndex: toolCallCount
           });
-          if (toolCall) streamedToolCalls.push(toolCall);
-          if (kind === "chat" && toolCall) {
+          if (!toolCall) continue;
+          finishReason = "tool_calls";
+          streamedToolCalls.push(toolCall);
+          if (kind === "chat") {
             await writer.write(chatChunk({ id: input.id, created: input.created, model: input.model, toolCall: { index: toolCallCount, value: toolCall } }));
           }
           toolCallCount += 1;

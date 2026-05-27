@@ -526,19 +526,21 @@ export function toOpenAiToolCalls(input: {
   responseId: string;
   startIndex?: number;
 }): OpenAiToolCall[] {
-  return input.toolCalls.map((toolCall, offset) => {
+  const tools = input.tools ?? [];
+  return input.toolCalls.flatMap((toolCall, offset) => {
     const index = (input.startIndex ?? 0) + offset;
-    const tool = resolveToolSpec(toolCall.name, toolCall.arguments ?? {}, input.tools ?? []);
+    const tool = resolveToolSpec(toolCall.name, toolCall.arguments ?? {}, tools);
+    if (!tool && tools.length > 0) return [];
     const name = tool?.name ?? toolCall.name;
     const toolArguments = normalizeToolArguments(toolCall.arguments ?? {}, tool, toolCall.name);
-    return {
+    return [{
       id: `call_${input.responseId.replace(/[^A-Za-z0-9]/g, "").slice(-18)}_${index}`,
       type: "function",
       function: {
         name,
         arguments: JSON.stringify(toolArguments)
       }
-    };
+    }];
   });
 }
 

@@ -309,8 +309,10 @@ public enum OpenAICompatibility {
         output: CursorSDKOutput
     ) -> [String: ResponseToolCallMemory] {
         let suffix = id.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18)
-        return Dictionary(uniqueKeysWithValues: output.toolCalls.enumerated().map { index, toolCall in
-            let resolved = resolveToolCall(toolCall, tools: prepared.tools)
+        return Dictionary(uniqueKeysWithValues: output.toolCalls.enumerated().compactMap { index, toolCall in
+            guard let resolved = resolveToolCall(toolCall, tools: prepared.tools) else {
+                return nil
+            }
             return (
                 "call_\(suffix)_\(index)",
                 ResponseToolCallMemory(name: resolved.name, arguments: resolved.arguments)
@@ -457,13 +459,17 @@ public enum OpenAICompatibility {
     ) throws -> Data {
         var data = Data()
         data.append(chatCompletionStreamStart(id: id, created: created, model: prepared.model))
-        if output.toolCalls.isEmpty, !output.text.isEmpty {
+        var emittedToolCallCount = 0
+        for toolCall in output.toolCalls {
+            let chunk = chatCompletionStreamToolCall(id: id, created: created, prepared: prepared, toolCall: toolCall, index: emittedToolCallCount)
+            guard !chunk.isEmpty else { continue }
+            data.append(chunk)
+            emittedToolCallCount += 1
+        }
+        if emittedToolCallCount == 0, !output.text.isEmpty {
             data.append(chatCompletionStreamText(id: id, created: created, model: prepared.model, delta: output.text))
         }
-        for (index, toolCall) in output.toolCalls.enumerated() {
-            data.append(chatCompletionStreamToolCall(id: id, created: created, prepared: prepared, toolCall: toolCall, index: index))
-        }
-        data.append(chatCompletionStreamFinish(id: id, created: created, model: prepared.model, emittedToolCallCount: output.toolCalls.count))
+        data.append(chatCompletionStreamFinish(id: id, created: created, model: prepared.model, emittedToolCallCount: emittedToolCallCount))
         if prepared.streamIncludeUsage {
             data.append(chatCompletionStreamUsage(id: id, created: created, prepared: prepared, output: output))
         }
@@ -501,11 +507,9 @@ public enum OpenAICompatibility {
         toolCall: CursorToolCall,
         index: Int
     ) -> Data {
-        let converted = toOpenAIToolCalls([toolCall], tools: prepared.tools, responseID: "\(id)_\(index)").first ?? [
-            "id": "call_\(index)",
-            "type": "function",
-            "function": ["name": toolCall.name, "arguments": jsonString(toolCall.arguments.mapValues(\.foundationValue))]
-        ]
+        guard let converted = toOpenAIToolCalls([toolCall], tools: prepared.tools, responseID: "\(id)_\(index)").first else {
+            return Data()
+        }
         return sse([
             "id": id,
             "object": "chat.completion.chunk",
@@ -528,14 +532,15 @@ public enum OpenAICompatibility {
     }
 
     public static func chatCompletionStreamUsage(id: String, created: Int, prepared: PreparedChatRequest, output: CursorSDKOutput) -> Data {
-        sse([
+        let toolCalls = toOpenAIToolCalls(output.toolCalls, tools: prepared.tools, responseID: id)
+        return sse([
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": prepared.model,
             "system_fingerprint": NSNull(),
             "choices": [],
-            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count + serializedLength(output.toolCalls.map { $0.arguments.mapValues(\.foundationValue) }))
+            "usage": usage(promptCharacters: prepared.promptCharacters, completionCharacters: output.text.count + serializedLength(toolCalls))
         ])
     }
 
@@ -552,7 +557,7 @@ public enum OpenAICompatibility {
         let messageID = "msg_\(id.dropFirst(5))"
         let toolCallItems = responseToolCallItems(output.toolCalls, prepared: prepared, responseID: id)
         var outputItems: [[String: Any]] = []
-        if output.toolCalls.isEmpty {
+        if toolCallItems.isEmpty {
             outputItems.append([
                 "id": messageID,
                 "type": "message",
@@ -604,7 +609,8 @@ public enum OpenAICompatibility {
             data.append(chunk)
         }
         var outputIndex = 0
-        let includeMessage = output.toolCalls.isEmpty
+        let toolCallItems = responseToolCallItems(output.toolCalls, prepared: prepared, responseID: id)
+        let includeMessage = toolCallItems.isEmpty
         if includeMessage {
             for chunk in responseStreamTextStart(id: id, outputIndex: outputIndex) {
                 data.append(chunk)
@@ -614,8 +620,8 @@ public enum OpenAICompatibility {
             }
             outputIndex += 1
         }
-        for (index, toolCall) in output.toolCalls.enumerated() {
-            for chunk in responseStreamToolCall(id: id, prepared: prepared, toolCall: toolCall, index: index, outputIndex: outputIndex) {
+        for item in toolCallItems {
+            for chunk in responseStreamToolCallItem(item, outputIndex: outputIndex) {
                 data.append(chunk)
             }
             outputIndex += 1
@@ -687,10 +693,16 @@ public enum OpenAICompatibility {
         index: Int,
         outputIndex: Int
     ) -> [Data] {
-        let item = responseToolCallItem(toolCall, prepared: prepared, responseID: id, index: index)
+        guard let item = responseToolCallItem(toolCall, prepared: prepared, responseID: id, index: index) else {
+            return []
+        }
+        return responseStreamToolCallItem(item, outputIndex: outputIndex)
+    }
+
+    private static func responseStreamToolCallItem(_ item: [String: Any], outputIndex: Int) -> [Data] {
         let pending = item.merging(["arguments": "", "status": "in_progress"]) { _, new in new }
         let arguments = item["arguments"] as? String ?? "{}"
-        let itemID = item["id"] as? String ?? "fc_\(index)"
+        let itemID = item["id"] as? String ?? "fc_\(outputIndex)"
         return [
             sse([
                 "type": "response.output_item.added",
@@ -1277,9 +1289,15 @@ public enum OpenAICompatibility {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    static func canMapToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> Bool {
+        resolveToolCall(toolCall, tools: tools) != nil
+    }
+
     private static func toOpenAIToolCalls(_ toolCalls: [CursorToolCall], tools: [OpenAIToolSpec], responseID: String) -> [[String: Any]] {
-        toolCalls.enumerated().map { index, toolCall in
-            let resolved = resolveToolCall(toolCall, tools: tools)
+        toolCalls.enumerated().compactMap { index, toolCall in
+            guard let resolved = resolveToolCall(toolCall, tools: tools) else {
+                return nil
+            }
             return [
                 "id": "call_\(responseID.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18))_\(index)",
                 "type": "function",
@@ -1292,13 +1310,15 @@ public enum OpenAICompatibility {
     }
 
     private static func responseToolCallItems(_ toolCalls: [CursorToolCall], prepared: PreparedChatRequest, responseID: String) -> [[String: Any]] {
-        toolCalls.enumerated().map { index, toolCall in
+        toolCalls.enumerated().compactMap { index, toolCall in
             responseToolCallItem(toolCall, prepared: prepared, responseID: responseID, index: index)
         }
     }
 
-    private static func responseToolCallItem(_ toolCall: CursorToolCall, prepared: PreparedChatRequest, responseID: String, index: Int) -> [String: Any] {
-        let resolved = resolveToolCall(toolCall, tools: prepared.tools)
+    private static func responseToolCallItem(_ toolCall: CursorToolCall, prepared: PreparedChatRequest, responseID: String, index: Int) -> [String: Any]? {
+        guard let resolved = resolveToolCall(toolCall, tools: prepared.tools) else {
+            return nil
+        }
         let suffix = responseID.replacingOccurrences(of: "[^A-Za-z0-9]", with: "", options: .regularExpression).suffix(18)
         return [
             "id": "fc_\(suffix)_\(index)",
@@ -1315,8 +1335,9 @@ public enum OpenAICompatibility {
         var arguments: [String: JSONValue]
     }
 
-    private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> ResolvedToolCall {
+    private static func resolveToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec]) -> ResolvedToolCall? {
         guard let tool = resolveToolSpec(toolCall.name, arguments: toolCall.arguments, tools: tools) else {
+            guard tools.isEmpty else { return nil }
             return ResolvedToolCall(name: toolCall.name, arguments: toolCall.arguments)
         }
         return ResolvedToolCall(
