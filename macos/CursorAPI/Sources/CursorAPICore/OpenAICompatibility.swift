@@ -1183,6 +1183,9 @@ public enum OpenAICompatibility {
         if let mcpTarget = mcpTarget(forClientToolName: toolName) {
             return "Use SDK mcp now with providerIdentifier \"\(mcpTarget.provider)\", toolName \"\(mcpTarget.toolName)\", and args matching the \(toolName) schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool."
         }
+        if canonicalToolName(toolName) == "glob", normalizedName(toolName) != "glob" {
+            return "Use SDK glob now; it will be forwarded to client tool \(toolName) with arguments matching its schema. Do not substitute shell or prose for this explicitly requested client tool."
+        }
         return "Use the explicitly requested client tool \(toolName) now, with arguments matching its schema. Do not substitute a different tool."
     }
 
@@ -1552,18 +1555,82 @@ public enum OpenAICompatibility {
         if mcpTarget(forClientToolName: clientToolName) != nil {
             return "mcp"
         }
+        let canonical = canonicalToolName(clientToolName)
+        if isKnownSDKCanonical(canonical) {
+            return canonical
+        }
         return clientToolName
     }
 
     private static func sdkFeedbackArguments(for clientToolName: String, arguments: [String: JSONValue]) -> [String: JSONValue] {
-        guard let target = mcpTarget(forClientToolName: clientToolName) else {
+        if let target = mcpTarget(forClientToolName: clientToolName) {
+            return [
+                "providerIdentifier": .string(target.provider),
+                "toolName": .string(target.toolName),
+                "args": .object(arguments)
+            ]
+        }
+        switch canonicalToolName(clientToolName) {
+        case "shell":
+            return compactJSON([
+                "command": firstArgument(in: arguments, keys: ["command", "cmd", "script", "input"])?.value,
+                "workingDirectory": firstArgument(in: arguments, keys: ["cwd", "workingDirectory", "working_directory", "directory", "path"])?.value,
+                "timeout": firstArgument(in: arguments, keys: ["timeout"])?.value
+            ])
+        case "write":
+            return compactJSON([
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases())?.value,
+                "fileText": firstArgument(in: arguments, keys: ["content", "text", "fileText", "file_text", "newString"])?.value
+            ])
+        case "read":
+            return compactJSON([
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
+                "offset": firstArgument(in: arguments, keys: ["offset", "start", "startLine", "start_line"])?.value,
+                "limit": firstArgument(in: arguments, keys: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])?.value
+            ])
+        case "delete":
+            return compactJSON([
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value
+            ])
+        case "edit":
+            return compactJSON([
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value,
+                "oldString": firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
+                "newString": firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value
+            ])
+        case "glob":
+            return compactJSON([
+                "targetDirectory": firstArgument(in: arguments, keys: globPathAliases())?.value,
+                "globPattern": firstArgument(in: arguments, keys: globPatternAliases())?.value
+            ])
+        case "grep":
+            return compactJSON([
+                "pattern": firstArgument(in: arguments, keys: ["pattern", "query", "search", "regex"])?.value,
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "cwd"])?.value,
+                "glob": firstArgument(in: arguments, keys: ["glob", "include"])?.value,
+                "caseInsensitive": firstArgument(in: arguments, keys: ["caseInsensitive", "case_insensitive", "ignoreCase", "ignore_case"])?.value,
+                "literal": firstArgument(in: arguments, keys: ["literal", "fixedString", "fixed_string"])?.value,
+                "context": firstArgument(in: arguments, keys: ["context", "contextLines", "context_lines"])?.value,
+                "headLimit": firstArgument(in: arguments, keys: ["headLimit", "head_limit", "limit", "maxResults", "max_results"])?.value
+            ])
+        case "ls":
+            return compactJSON([
+                "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"])?.value,
+                "limit": firstArgument(in: arguments, keys: ["limit", "maxResults", "max_results"])?.value
+            ])
+        default:
             return arguments
         }
-        return [
-            "providerIdentifier": .string(target.provider),
-            "toolName": .string(target.toolName),
-            "args": .object(arguments)
-        ]
+    }
+
+    private static func compactJSON(_ values: [String: JSONValue?]) -> [String: JSONValue] {
+        var output: [String: JSONValue] = [:]
+        for (key, value) in values {
+            if let value {
+                output[key] = value
+            }
+        }
+        return output
     }
 
     static func canMapToolCall(_ toolCall: CursorToolCall, tools: [OpenAIToolSpec], context: ToolCallContext? = nil) -> Bool {
@@ -1860,6 +1927,7 @@ public enum OpenAICompatibility {
             copy("path", as: pathPropertyAliases() + ["directory"])
             copy("glob", as: ["include", "includeGlob", "include_glob"])
             copy("outputMode", as: ["output_mode", "mode"])
+            copy("literal", as: ["fixedString", "fixed_string"])
             copy("contextBefore", as: ["context_before", "beforeContext", "before_context"])
             copy("contextAfter", as: ["context_after", "afterContext", "after_context"])
             copy("context", as: ["contextLines", "context_lines"])
@@ -2492,8 +2560,8 @@ public enum OpenAICompatibility {
         case "edit":
             guard let oldText = firstArgument(in: arguments, keys: ["oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string"])?.value,
                   let newText = firstArgument(in: arguments, keys: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"])?.value,
-                  let oldKey = propertyName(matching: ["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], in: properties),
-                  let newKey = propertyName(matching: ["newString", "new_string", "new_str", "replacement", "replace", "content"], in: properties) else {
+                  let oldKey = propertyName(matching: ["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], in: properties),
+                  let newKey = propertyName(matching: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], in: properties) else {
                 return nil
             }
             output[oldKey] = oldText
@@ -2530,8 +2598,8 @@ public enum OpenAICompatibility {
         case "write":
             return propertyName(matching: ["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"], in: properties) != nil
         case "edit":
-            return propertyName(matching: ["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], in: properties) != nil
-                && propertyName(matching: ["newString", "new_string", "new_str", "replacement", "replace", "content"], in: properties) != nil
+            return propertyName(matching: ["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], in: properties) != nil
+                && propertyName(matching: ["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], in: properties) != nil
         default:
             return true
         }
@@ -2817,13 +2885,15 @@ public enum OpenAICompatibility {
         case "commandline", "cmd", "command", "script":
             return ["command", "cmd", "script", "input"]
         case "contents", "content", "filetext", "newcontents", "newtext":
-            return ["content", "contents", "text", "fileText", "file_text", "newString", "replacement"]
+            return ["content", "contents", "text", "fileText", "file_text", "newString", "newText", "new_text", "replacement"]
         case "newstring", "replacement", "replace":
-            return ["newString", "replacement", "content", "text"]
+            return ["newString", "newText", "new_text", "replacement", "content", "text"]
         case "oldcontents", "oldstring", "oldtext", "searchstring":
-            return ["oldString", "old", "search", "text"]
+            return ["oldString", "oldText", "old_text", "old", "search", "text"]
         case "glob", "globpattern", "filepattern", "include":
             return ["include", "pattern", "glob", "filePattern", "file_pattern", "query"]
+        case "literal", "fixedstring":
+            return ["literal", "fixedString", "fixed_string"]
         case "pattern", "query", "regex", "search":
             return ["pattern", "query", "regex", "search", "prompt"]
         case "targetdirectory", "targeting", "searchpath", "basepath", "root", "rootdir", "directory", "cwd", "workingdirectory", "workdir":
@@ -2855,6 +2925,9 @@ public enum OpenAICompatibility {
             if ["globpattern", "glob", "include"].contains(normalizedKey) {
                 return ["include", "glob", "files"]
             }
+            if ["literal", "fixedstring"].contains(normalizedKey) {
+                return ["literal", "fixedString", "fixed_string"]
+            }
         case "read", "delete":
             if ["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].contains(normalizedKey) {
                 return pathPropertyAliases()
@@ -2865,6 +2938,16 @@ public enum OpenAICompatibility {
             }
             if ["newcontents", "contents", "content", "text", "filetext"].contains(normalizedKey) {
                 return ["content", "text", "newString", "fileText", "file_text"]
+            }
+        case "edit":
+            if ["targeting", "targetfile", "filepath", "absolutepath", "path", "file"].contains(normalizedKey) {
+                return pathPropertyAliases()
+            }
+            if ["oldstring", "oldtext", "oldcontents", "search", "searchstring"].contains(normalizedKey) {
+                return ["oldString", "oldText", "old_text", "old", "search"]
+            }
+            if ["newstring", "newtext", "newcontents", "replacement", "replace", "content"].contains(normalizedKey) {
+                return ["newString", "newText", "new_text", "replacement", "content"]
             }
         case "shell":
             if ["cmd", "commandline", "command", "script"].contains(normalizedKey) {
@@ -2898,7 +2981,7 @@ public enum OpenAICompatibility {
             return "delete"
         case "search", "searchfiles", "searchfilesystem", "ripgrep", "rg":
             return "grep"
-        case "globfiles", "fileglob", "filesearch", "findfiles":
+        case "globfiles", "fileglob", "filesearch", "find", "findfile", "findfiles":
             return "glob"
         case "list", "listfiles", "listdirectory", "listdir":
             return "ls"
@@ -2930,7 +3013,7 @@ public enum OpenAICompatibility {
         case "grep":
             return ["grep", "search", "search_files", "search_filesystem", "ripgrep", "rg"]
         case "glob":
-            return ["glob", "glob_files", "file_glob", "file_search", "find_files"]
+            return ["glob", "glob_files", "file_glob", "file_search", "find", "find_file", "find_files"]
         case "ls":
             return ["ls", "list", "list_files", "list_directory", "list_dir"]
         case "readlints":

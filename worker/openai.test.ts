@@ -148,6 +148,196 @@ describe("OpenAI compatibility adapter", () => {
     expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.tsx", path: "src" });
   });
 
+  it("treats pi find as a glob-compatible built-in instead of synthetic MCP", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [{ role: "user", content: "find source files" }],
+        tool_choice: { type: "function", function: { name: "find" } },
+        tools: [
+          {
+            name: "find",
+            description: "Find files by glob pattern",
+            input_schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                pattern: { type: "string" },
+                path: { type: "string" },
+                limit: { type: "number" }
+              },
+              required: ["pattern"]
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    expect(prepared.prompt.text).toContain('"name":"find"');
+    expect(prepared.prompt.text).not.toContain('"sdk_mcp":{"providerIdentifier":"client","toolName":"find"');
+    expect(prepared.prompt.text).toContain("Use SDK glob now; it will be forwarded to client tool find");
+
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: prepared.tools,
+      toolCalls: [{ name: "glob", arguments: { targetDirectory: "src", globPattern: "**/*.tsx" } }]
+    });
+
+    expect(toolCalls[0].function.name).toBe("find");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "**/*.tsx", path: "src" });
+  });
+
+  it("maps SDK grep arguments to pi grep schemas", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "grep",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              pattern: { type: "string" },
+              path: { type: "string" },
+              glob: { type: "string" },
+              ignoreCase: { type: "boolean" },
+              literal: { type: "boolean" },
+              context: { type: "number" },
+              limit: { type: "number" }
+            },
+            required: ["pattern"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "grep",
+          arguments: {
+            pattern: "TODO",
+            path: "src",
+            glob: "*.tsx",
+            caseInsensitive: true,
+            literal: true,
+            context: 2,
+            headLimit: 10
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("grep");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      pattern: "TODO",
+      path: "src",
+      glob: "*.tsx",
+      ignoreCase: true,
+      literal: true,
+      context: 2,
+      limit: 10
+    });
+  });
+
+  it("maps SDK edit arguments to pi edit schemas", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "edit",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              path: { type: "string" },
+              oldText: { type: "string" },
+              newText: { type: "string" }
+            },
+            required: ["path", "oldText", "newText"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "edit",
+          arguments: {
+            path: "src/App.tsx",
+            oldString: "return null",
+            newString: "return <main />"
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("edit");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      path: "src/App.tsx",
+      oldText: "return null",
+      newText: "return <main />"
+    });
+  });
+
+  it("maps the full pi built-in tool schema matrix", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        { name: "bash", parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } }, required: ["command"] } },
+        {
+          name: "read",
+          parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] }
+        },
+        {
+          name: "write",
+          parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }
+        },
+        {
+          name: "edit",
+          parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, required: ["path", "oldText", "newText"] }
+        },
+        {
+          name: "find",
+          parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" }, limit: { type: "number" } }, required: ["pattern"] }
+        },
+        {
+          name: "grep",
+          parameters: {
+            type: "object",
+            properties: {
+              pattern: { type: "string" },
+              path: { type: "string" },
+              glob: { type: "string" },
+              ignoreCase: { type: "boolean" },
+              literal: { type: "boolean" },
+              context: { type: "number" },
+              limit: { type: "number" }
+            },
+            required: ["pattern"]
+          }
+        },
+        { name: "ls", parameters: { type: "object", properties: { path: { type: "string" }, limit: { type: "number" } } } }
+      ],
+      toolCalls: [
+        { name: "shell", arguments: { command: "npm test", timeout: 120_000 } },
+        { name: "read", arguments: { path: "src/App.tsx", offset: 5, limit: 20 } },
+        { name: "write", arguments: { path: "src/App.tsx", fileText: "export default function App() { return null }" } },
+        { name: "edit", arguments: { path: "src/App.tsx", oldString: "return null", newString: "return <main />" } },
+        { name: "glob", arguments: { globPattern: "**/*.tsx", targetDirectory: "src" } },
+        { name: "grep", arguments: { pattern: "TODO", path: "src", glob: "*.tsx", caseInsensitive: true, literal: true, context: 2, headLimit: 10 } },
+        { name: "ls", arguments: { path: "src", limit: 50 } }
+      ]
+    });
+
+    expect(toolCalls.map((call) => call.function.name)).toEqual(["bash", "read", "write", "edit", "find", "grep", "ls"]);
+    expect(toolCalls.map((call) => JSON.parse(call.function.arguments))).toEqual([
+      { command: "npm test", timeout: 120_000 },
+      { path: "src/App.tsx", offset: 5, limit: 20 },
+      { path: "src/App.tsx", content: "export default function App() { return null }" },
+      { path: "src/App.tsx", oldText: "return null", newText: "return <main />" },
+      { pattern: "**/*.tsx", path: "src" },
+      { pattern: "TODO", path: "src", glob: "*.tsx", ignoreCase: true, literal: true, context: 2, limit: 10 },
+      { path: "src", limit: 50 }
+    ]);
+  });
+
   it("uses OpenCode working directory to normalize SDK file and glob calls to real OpenCode schemas", () => {
     const prepared = prepareOpencodeSdkChatRequest(
       {
@@ -1160,6 +1350,228 @@ describe("OpenAI compatibility adapter", () => {
       }
     });
     expect(feedback.result).toEqual({ status: "success", value: { content: "ok" } });
+  });
+
+  it("feeds find client tool results back as completed SDK glob calls", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "find source files" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_find",
+                type: "function",
+                function: {
+                  name: "find",
+                  arguments: JSON.stringify({ pattern: "**/*.tsx", path: "src" })
+                }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_find", content: "{\"files\":[\"src/App.tsx\"]}" }
+        ],
+        tools: [
+          {
+            name: "find",
+            input_schema: {
+              type: "object",
+              properties: {
+                pattern: { type: "string" },
+                path: { type: "string" }
+              },
+              required: ["pattern"]
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const line = prepared.prompt.text
+      .split("\n")
+      .find((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "));
+    expect(line).toBeTruthy();
+    const feedback = JSON.parse(line!.slice("LOCAL OPENCODE TOOL RESULT: ".length));
+    expect(feedback.name).toBe("glob");
+    expect(feedback.args).toEqual({ targetDirectory: "src", globPattern: "**/*.tsx" });
+    expect(feedback.result.value.files).toEqual(["src/App.tsx"]);
+    expect(feedback.result.value.totalFiles).toBe(1);
+  });
+
+  it("feeds pi edit results back with SDK edit argument names", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "edit the app" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_edit",
+                type: "function",
+                function: {
+                  name: "edit",
+                  arguments: JSON.stringify({ path: "src/App.tsx", oldText: "return null", newText: "return <main />" })
+                }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_edit", content: "{\"diff\":\"ok\"}" }
+        ],
+        tools: [
+          {
+            name: "edit",
+            input_schema: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                oldText: { type: "string" },
+                newText: { type: "string" }
+              },
+              required: ["path", "oldText", "newText"]
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const line = prepared.prompt.text
+      .split("\n")
+      .find((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "));
+    expect(line).toBeTruthy();
+    const feedback = JSON.parse(line!.slice("LOCAL OPENCODE TOOL RESULT: ".length));
+    expect(feedback.name).toBe("edit");
+    expect(feedback.args).toEqual({
+      path: "src/App.tsx",
+      oldString: "return null",
+      newString: "return <main />"
+    });
+    expect(feedback.result.value.diffString).toBe("ok");
+  });
+
+  it("feeds pi grep results back with SDK grep option names", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "search source files" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_grep",
+                type: "function",
+                function: {
+                  name: "grep",
+                  arguments: JSON.stringify({
+                    pattern: "TODO",
+                    path: "src",
+                    glob: "*.tsx",
+                    ignoreCase: true,
+                    literal: true,
+                    context: 2,
+                    limit: 10
+                  })
+                }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_grep", content: "src/App.tsx:1:TODO" }
+        ],
+        tools: [
+          {
+            name: "grep",
+            input_schema: {
+              type: "object",
+              properties: {
+                pattern: { type: "string" },
+                path: { type: "string" },
+                glob: { type: "string" },
+                ignoreCase: { type: "boolean" },
+                literal: { type: "boolean" },
+                context: { type: "number" },
+                limit: { type: "number" }
+              },
+              required: ["pattern"]
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const line = prepared.prompt.text
+      .split("\n")
+      .find((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "));
+    expect(line).toBeTruthy();
+    const feedback = JSON.parse(line!.slice("LOCAL OPENCODE TOOL RESULT: ".length));
+    expect(feedback.name).toBe("grep");
+    expect(feedback.args).toEqual({
+      pattern: "TODO",
+      path: "src",
+      glob: "*.tsx",
+      caseInsensitive: true,
+      literal: true,
+      context: 2,
+      headLimit: 10
+    });
+    expect(feedback.result.value.text).toBe("src/App.tsx:1:TODO");
+  });
+
+  it("feeds pi ls results back with SDK list argument names", () => {
+    const prepared = prepareOpencodeSdkChatRequest(
+      {
+        model: "composer-2.5-sdk",
+        messages: [
+          { role: "user", content: "list files" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_ls",
+                type: "function",
+                function: {
+                  name: "ls",
+                  arguments: JSON.stringify({ path: "src", limit: 20 })
+                }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_ls", content: "App.tsx" }
+        ],
+        tools: [
+          {
+            name: "ls",
+            input_schema: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                limit: { type: "number" }
+              }
+            }
+          }
+        ]
+      },
+      { id: "composer-2.5-sdk" }
+    );
+
+    const line = prepared.prompt.text
+      .split("\n")
+      .find((item) => item.startsWith("LOCAL OPENCODE TOOL RESULT: "));
+    expect(line).toBeTruthy();
+    const feedback = JSON.parse(line!.slice("LOCAL OPENCODE TOOL RESULT: ".length));
+    expect(feedback.name).toBe("ls");
+    expect(feedback.args).toEqual({ path: "src", limit: 20 });
+    expect(feedback.result.value.text).toBe("App.tsx");
   });
 
   it("maps SDK builtins to schema-compatible prefixed server tools", () => {

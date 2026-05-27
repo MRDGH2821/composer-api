@@ -1844,6 +1844,234 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(nested["format"] as? String, "markdown")
     }
 
+    func testChatToolResultsFeedFindBackAsSDKGlobCalls() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"find source files"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_find",
+                  "type":"function",
+                  "function":{
+                    "name":"find",
+                    "arguments":"{\"pattern\":\"**/*.tsx\",\"path\":\"src\"}"
+                  }
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_find","content":"{\"files\":[\"src/App.tsx\"]}"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"find",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "path":{"type":"string"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(prepared.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedbackJSON = String(feedbackLine.dropFirst(prefix.count))
+        let feedbackData = Data(feedbackJSON.utf8)
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackData) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "glob")
+        XCTAssertEqual(arguments["targetDirectory"] as? String, "src")
+        XCTAssertEqual(arguments["globPattern"] as? String, "**/*.tsx")
+        XCTAssertNil(arguments["providerIdentifier"])
+    }
+
+    func testChatToolResultsFeedPiEditBackWithSDKArgumentNames() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"edit the app"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_edit",
+                  "type":"function",
+                  "function":{
+                    "name":"edit",
+                    "arguments":"{\"path\":\"src/App.tsx\",\"oldText\":\"return null\",\"newText\":\"return <main />\"}"
+                  }
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_edit","content":"{\"diff\":\"ok\"}"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"edit",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "path":{"type":"string"},
+                    "oldText":{"type":"string"},
+                    "newText":{"type":"string"}
+                  },
+                  "required":["path","oldText","newText"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(prepared.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedbackJSON = String(feedbackLine.dropFirst(prefix.count))
+        let feedbackData = Data(feedbackJSON.utf8)
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackData) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "edit")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["oldString"] as? String, "return null")
+        XCTAssertEqual(arguments["newString"] as? String, "return <main />")
+        XCTAssertNil(arguments["oldText"])
+        XCTAssertNil(arguments["newText"])
+    }
+
+    func testChatToolResultsFeedPiGrepBackWithSDKOptionNames() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"search source files"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_grep",
+                  "type":"function",
+                  "function":{
+                    "name":"grep",
+                    "arguments":"{\"pattern\":\"TODO\",\"path\":\"src\",\"glob\":\"*.tsx\",\"ignoreCase\":true,\"literal\":true,\"context\":2,\"limit\":10}"
+                  }
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_grep","content":"src/App.tsx:1:TODO"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"grep",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "path":{"type":"string"},
+                    "glob":{"type":"string"},
+                    "ignoreCase":{"type":"boolean"},
+                    "literal":{"type":"boolean"},
+                    "context":{"type":"number"},
+                    "limit":{"type":"number"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(prepared.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedbackJSON = String(feedbackLine.dropFirst(prefix.count))
+        let feedbackData = Data(feedbackJSON.utf8)
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackData) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "grep")
+        XCTAssertEqual(arguments["pattern"] as? String, "TODO")
+        XCTAssertEqual(arguments["path"] as? String, "src")
+        XCTAssertEqual(arguments["glob"] as? String, "*.tsx")
+        XCTAssertEqual(arguments["caseInsensitive"] as? Bool, true)
+        XCTAssertEqual(arguments["literal"] as? Bool, true)
+        XCTAssertEqual((arguments["context"] as? NSNumber)?.doubleValue, 2)
+        XCTAssertEqual((arguments["headLimit"] as? NSNumber)?.doubleValue, 10)
+        XCTAssertNil(arguments["ignoreCase"])
+        XCTAssertNil(arguments["limit"])
+    }
+
+    func testChatToolResultsFeedPiListBackWithSDKArgumentNames() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"user","content":"list files"},
+            {
+              "role":"assistant",
+              "content":null,
+              "tool_calls":[
+                {
+                  "id":"call_ls",
+                  "type":"function",
+                  "function":{
+                    "name":"ls",
+                    "arguments":"{\"path\":\"src\",\"limit\":20}"
+                  }
+                }
+              ]
+            },
+            {"role":"tool","tool_call_id":"call_ls","content":"App.tsx"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"ls",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "path":{"type":"string"},
+                    "limit":{"type":"number"}
+                  }
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(prepared.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedbackJSON = String(feedbackLine.dropFirst(prefix.count))
+        let feedbackData = Data(feedbackJSON.utf8)
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackData) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "ls")
+        XCTAssertEqual(arguments["path"] as? String, "src")
+        XCTAssertEqual((arguments["limit"] as? NSNumber)?.doubleValue, 20)
+    }
+
     func testChatFileRequestAfterPriorToolResultStillRequiresLocalTool() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -3122,6 +3350,245 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(writeArguments["content"] as? String, "export default function App() { return null }")
         XCTAssertNil(writeArguments["path"])
         XCTAssertNil(writeArguments["fileText"])
+    }
+
+    func testChatToolCallsMapSDKGlobToPiFindSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"find source files"}],
+          "tool_choice":{"type":"function","function":{"name":"find"}},
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"find",
+                "description":"Find files by glob pattern",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "path":{"type":"string"},
+                    "limit":{"type":"number"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        XCTAssertTrue(prepared.prompt.contains(#""name":"find""#))
+        XCTAssertFalse(prepared.prompt.contains(#""sdk_mcp":{"providerIdentifier":"client","toolName":"find""#))
+        XCTAssertTrue(prepared.prompt.contains("Use SDK glob now; it will be forwarded to client tool find"))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "glob", arguments: [
+                    "targetDirectory": .string("src"),
+                    "globPattern": .string("**/*.tsx")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "find")
+        XCTAssertEqual(arguments["pattern"] as? String, "**/*.tsx")
+        XCTAssertEqual(arguments["path"] as? String, "src")
+        XCTAssertNil(arguments["globPattern"])
+        XCTAssertNil(arguments["targetDirectory"])
+    }
+
+    func testChatToolCallsMapSDKGrepToPiGrepSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"search source files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"grep",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "path":{"type":"string"},
+                    "glob":{"type":"string"},
+                    "ignoreCase":{"type":"boolean"},
+                    "literal":{"type":"boolean"},
+                    "context":{"type":"number"},
+                    "limit":{"type":"number"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "grep", arguments: [
+                    "pattern": .string("TODO"),
+                    "path": .string("src"),
+                    "glob": .string("*.tsx"),
+                    "caseInsensitive": .bool(true),
+                    "literal": .bool(true),
+                    "context": .number(2),
+                    "headLimit": .number(10)
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "grep")
+        XCTAssertEqual(arguments["pattern"] as? String, "TODO")
+        XCTAssertEqual(arguments["path"] as? String, "src")
+        XCTAssertEqual(arguments["glob"] as? String, "*.tsx")
+        XCTAssertEqual(arguments["ignoreCase"] as? Bool, true)
+        XCTAssertEqual(arguments["literal"] as? Bool, true)
+        XCTAssertEqual((arguments["context"] as? NSNumber)?.doubleValue, 2)
+        XCTAssertEqual((arguments["limit"] as? NSNumber)?.doubleValue, 10)
+        XCTAssertNil(arguments["caseInsensitive"])
+        XCTAssertNil(arguments["headLimit"])
+    }
+
+    func testChatToolCallsMapSDKEditToPiEditSchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"edit app"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"edit",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "path":{"type":"string"},
+                    "oldText":{"type":"string"},
+                    "newText":{"type":"string"}
+                  },
+                  "required":["path","oldText","newText"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "edit", arguments: [
+                    "path": .string("src/App.tsx"),
+                    "oldString": .string("return null"),
+                    "newString": .string("return <main />")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "edit")
+        XCTAssertEqual(arguments["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments["oldText"] as? String, "return null")
+        XCTAssertEqual(arguments["newText"] as? String, "return <main />")
+        XCTAssertNil(arguments["oldString"])
+        XCTAssertNil(arguments["newString"])
+    }
+
+    func testChatToolCallsMapFullPiBuiltinSchemaMatrix() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"work in the project"}],
+          "tools":[
+            {"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"}},"required":["command"]}}},
+            {"type":"function","function":{"name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["path"]}}},
+            {"type":"function","function":{"name":"write","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
+            {"type":"function","function":{"name":"edit","parameters":{"type":"object","properties":{"path":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["path","oldText","newText"]}}},
+            {"type":"function","function":{"name":"find","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"limit":{"type":"number"}},"required":["pattern"]}}},
+            {"type":"function","function":{"name":"grep","parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"ignoreCase":{"type":"boolean"},"literal":{"type":"boolean"},"context":{"type":"number"},"limit":{"type":"number"}},"required":["pattern"]}}},
+            {"type":"function","function":{"name":"ls","parameters":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number"}}}}}
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "shell", arguments: ["command": .string("npm test"), "timeout": .number(120_000)]),
+                CursorToolCall(name: "read", arguments: ["path": .string("src/App.tsx"), "offset": .number(5), "limit": .number(20)]),
+                CursorToolCall(name: "write", arguments: ["path": .string("src/App.tsx"), "fileText": .string("export default function App() { return null }")]),
+                CursorToolCall(name: "edit", arguments: ["path": .string("src/App.tsx"), "oldString": .string("return null"), "newString": .string("return <main />")]),
+                CursorToolCall(name: "glob", arguments: ["globPattern": .string("**/*.tsx"), "targetDirectory": .string("src")]),
+                CursorToolCall(name: "grep", arguments: [
+                    "pattern": .string("TODO"),
+                    "path": .string("src"),
+                    "glob": .string("*.tsx"),
+                    "caseInsensitive": .bool(true),
+                    "literal": .bool(true),
+                    "context": .number(2),
+                    "headLimit": .number(10)
+                ]),
+                CursorToolCall(name: "ls", arguments: ["path": .string("src"), "limit": .number(50)])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }, ["bash", "read", "write", "edit", "find", "grep", "ls"])
+
+        let arguments = try toolCalls.map { try decodedArguments(try XCTUnwrap($0["function"] as? [String: Any])) }
+        XCTAssertEqual(arguments[0]["command"] as? String, "npm test")
+        XCTAssertEqual((arguments[0]["timeout"] as? NSNumber)?.doubleValue, 120_000)
+        XCTAssertEqual(arguments[1]["path"] as? String, "src/App.tsx")
+        XCTAssertEqual((arguments[1]["offset"] as? NSNumber)?.doubleValue, 5)
+        XCTAssertEqual((arguments[1]["limit"] as? NSNumber)?.doubleValue, 20)
+        XCTAssertEqual(arguments[2]["path"] as? String, "src/App.tsx")
+        XCTAssertEqual(arguments[2]["content"] as? String, "export default function App() { return null }")
+        XCTAssertEqual(arguments[3]["oldText"] as? String, "return null")
+        XCTAssertEqual(arguments[3]["newText"] as? String, "return <main />")
+        XCTAssertEqual(arguments[4]["pattern"] as? String, "**/*.tsx")
+        XCTAssertEqual(arguments[4]["path"] as? String, "src")
+        XCTAssertEqual(arguments[5]["ignoreCase"] as? Bool, true)
+        XCTAssertEqual(arguments[5]["literal"] as? Bool, true)
+        XCTAssertEqual((arguments[5]["limit"] as? NSNumber)?.doubleValue, 10)
+        XCTAssertEqual(arguments[6]["path"] as? String, "src")
+        XCTAssertEqual((arguments[6]["limit"] as? NSNumber)?.doubleValue, 50)
     }
 
     func testChatToolCallsMapSDKAliasNamesToClientSchemas() throws {

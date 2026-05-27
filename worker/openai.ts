@@ -914,6 +914,9 @@ function requestedToolHint(toolName: string): string {
   if (target) {
     return `Use SDK mcp now with providerIdentifier "${target.provider}", toolName "${target.toolName}", and args matching the ${toolName} schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool.`;
   }
+  if (canonicalToolName(toolName) === "glob" && normalizeToolName(toolName) !== "glob") {
+    return `Use SDK glob now; it will be forwarded to client tool ${toolName} with arguments matching its schema. Do not substitute shell or prose for this explicitly requested client tool.`;
+  }
   return `Use the explicitly requested client tool ${toolName} now, with arguments matching its schema. Do not substitute a different tool.`;
 }
 
@@ -960,7 +963,7 @@ function isKnownMappedToolName(name: string): boolean {
     "edit", "editfile", "replacefile", "searchreplace",
     "delete", "deletefile", "removefile",
     "grep", "search", "searchfiles", "ripgrep", "rg",
-    "glob", "fileglob", "filesearch", "findfiles",
+    "glob", "fileglob", "filesearch", "find", "findfile", "findfiles",
     "ls", "list", "listfiles", "listdirectory",
     "mcp", "callmcptool",
     "semsearch", "semanticsearch", "searchcode",
@@ -1443,7 +1446,7 @@ function sdkToolNameForOpenCodeTool(name: string): string {
   if (["read", "readfile"].includes(normalized)) return "read";
   if (["write", "writefile"].includes(normalized)) return "write";
   if (["edit", "editfile"].includes(normalized)) return "edit";
-  if (["glob", "fileglob"].includes(normalized)) return "glob";
+  if (isGlobLikeToolName(normalized)) return "glob";
   if (["grep", "search"].includes(normalized)) return "grep";
   return name;
 }
@@ -1471,12 +1474,32 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>):
       fileText: firstStringArg(args, "content", "text", "fileText", "newString")
     });
   }
-  if (["read", "readfile", "delete", "edit", "editfile", "ls", "list"].includes(normalized)) {
+  if (["read", "readfile"].includes(normalized)) {
+    return compactRecord({
+      path: firstStringArg(args, "path", "filePath", "file", "directory"),
+      offset: firstNumberArg(args, "offset", "start", "startLine", "start_line"),
+      limit: firstNumberArg(args, "limit", "maxLines", "max_lines", "lineCount", "line_count")
+    });
+  }
+  if (["delete"].includes(normalized)) {
     return compactRecord({
       path: firstStringArg(args, "path", "filePath", "file", "directory")
     });
   }
-  if (["glob", "fileglob"].includes(normalized)) {
+  if (["ls", "list"].includes(normalized)) {
+    return compactRecord({
+      path: firstStringArg(args, "path", "filePath", "file", "directory"),
+      limit: firstNumberArg(args, "limit", "maxResults", "max_results")
+    });
+  }
+  if (["edit", "editfile"].includes(normalized)) {
+    return compactRecord({
+      path: firstStringArg(args, "path", "filePath", "file", "directory"),
+      oldString: firstStringArgAllowEmpty(args, "oldString", "old_string", "oldText", "old_text", "search", "searchString", "search_string"),
+      newString: firstStringArgAllowEmpty(args, "newString", "new_string", "newText", "new_text", "replacement", "replace", "content")
+    });
+  }
+  if (isGlobLikeToolName(normalized)) {
     return compactRecord({
       targetDirectory: firstStringArg(args, "path", "directory", "cwd", "targetDirectory"),
       globPattern: firstStringArg(args, "pattern", "glob", "include", "globPattern")
@@ -1486,7 +1509,11 @@ function openCodeArgsToSdkArgs(toolName: string, args: Record<string, unknown>):
     return compactRecord({
       pattern: firstStringArg(args, "pattern", "query", "search", "regex"),
       path: firstStringArg(args, "path", "directory", "cwd"),
-      glob: firstStringArg(args, "glob", "include")
+      glob: firstStringArg(args, "glob", "include"),
+      caseInsensitive: firstBooleanArg(args, "caseInsensitive", "case_insensitive", "ignoreCase", "ignore_case"),
+      literal: firstBooleanArg(args, "literal", "fixedString", "fixed_string"),
+      context: firstNumberArg(args, "context", "contextLines", "context_lines"),
+      headLimit: firstNumberArg(args, "headLimit", "head_limit", "limit", "maxResults", "max_results")
     });
   }
   return args;
@@ -1528,7 +1555,7 @@ function openCodeToolResultToSdkResult(toolName: string, args: Record<string, un
       diffString: stringFromParsed(parsed, ["diff", "diffString", "output"]) ?? resultText
     });
   }
-  if (["glob", "fileglob"].includes(normalized)) {
+  if (isGlobLikeToolName(normalized)) {
     const files = stringsFromParsed(parsed, ["files", "paths"]) ?? resultTextLines(resultText);
     return sdkToolResult(parsed, resultText, {
       files,
@@ -1590,6 +1617,14 @@ function firstNumberArg(args: Record<string, unknown>, ...keys: string[]): numbe
   for (const key of keys) {
     const value = args[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function firstBooleanArg(args: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "boolean") return value;
   }
   return undefined;
 }
@@ -1769,7 +1804,7 @@ function canonicalToolName(value: string): string {
   if (["editfile", "replacefile", "searchreplace"].includes(normalized)) return "edit";
   if (["deletefile", "removefile"].includes(normalized)) return "delete";
   if (["search", "searchfiles", "searchfilesystem", "ripgrep", "rg"].includes(normalized)) return "grep";
-  if (["globfiles", "fileglob", "filesearch", "findfiles"].includes(normalized)) return "glob";
+  if (isGlobLikeToolName(normalized)) return "glob";
   if (["list", "listfiles", "listdirectory", "listdir"].includes(normalized)) return "ls";
   if (["readlints", "diagnostics", "getdiagnostics"].includes(normalized)) return "readlints";
   if (["callmcptool"].includes(normalized)) return "mcp";
@@ -2185,8 +2220,8 @@ function commandStyleFileArguments(
   } else if (emittedCanonical === "edit") {
     const oldText = firstStringArgAllowEmpty(args, "oldString", "old_string", "old_str", "oldText", "old_text", "search", "searchString", "search_string");
     const newText = firstStringArgAllowEmpty(args, "newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content");
-    const oldKey = firstMatchingProperty(["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"], schema.properties, normalizedProperties);
-    const newKey = firstMatchingProperty(["newString", "new_string", "new_str", "replacement", "replace", "content"], schema.properties, normalizedProperties);
+    const oldKey = firstMatchingProperty(["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"], schema.properties, normalizedProperties);
+    const newKey = firstMatchingProperty(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"], schema.properties, normalizedProperties);
     if (!oldKey || !newKey || oldText === undefined || newText === undefined) return undefined;
     output[oldKey] = oldText;
     output[newKey] = newText;
@@ -2218,8 +2253,8 @@ function commandStyleFileToolSupports(canonical: string, tool: OpenAiToolSpec): 
   if (!has(operationPropertyCandidates()) || !has(pathCandidates())) return false;
   if (canonical === "write") return has(["content", "contents", "fileText", "file_text", "fileContent", "file_content", "text"]);
   if (canonical === "edit") {
-    return has(["oldString", "old_string", "old_str", "old", "search", "searchString", "search_string"])
-      && has(["newString", "new_string", "new_str", "replacement", "replace", "content"]);
+    return has(["oldString", "old_string", "old_str", "oldText", "old_text", "old", "search", "searchString", "search_string"])
+      && has(["newString", "new_string", "new_str", "newText", "new_text", "replacement", "replace", "content"]);
   }
   return true;
 }
@@ -2529,7 +2564,7 @@ function applyRequiredToolDefaults(
     if (required.includes(commandKey) && typeof next[commandKey] !== "string") {
       next[commandKey] = firstStringArg(originalArgs, "command", "cmd", "script", "input") || "";
     }
-  } else if (["glob", "fileglob", "filesearch", "findfiles"].includes(normalizedTool)) {
+  } else if (isGlobLikeToolName(normalizedTool)) {
     const normalizedProperties = new Map(required.map((property) => [normalizeToolName(property), property]));
     const patternKey = firstMatchingProperty(globPatternCandidates(), required, normalizedProperties);
     if (patternKey && typeof next[patternKey] !== "string") {
@@ -2704,12 +2739,13 @@ function commonArgumentAliases(normalized: string): Array<{ candidates: string[]
     glob: [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 85 }],
     globpattern: [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 95 }],
     include: [{ candidates: ["include", "pattern", "glob", "filePattern", "file_pattern", "query"], priority: 70 }],
+    literal: [{ candidates: ["literal", "fixedString", "fixed_string"], priority: 90 }],
     newcontents: [{ candidates: ["content", "newString", "replacement", "text"], priority: 85 }],
-    newstring: [{ candidates: ["newString", "replacement", "content"], priority: 95 }],
-    newtext: [{ candidates: ["newString", "replacement", "content", "text"], priority: 85 }],
-    oldcontents: [{ candidates: ["oldString", "old", "search", "text"], priority: 80 }],
-    oldstring: [{ candidates: ["oldString", "old", "search"], priority: 95 }],
-    oldtext: [{ candidates: ["oldString", "old", "search", "text"], priority: 85 }],
+    newstring: [{ candidates: ["newString", "newText", "new_text", "replacement", "content"], priority: 95 }],
+    newtext: [{ candidates: ["newText", "newString", "replacement", "content", "text"], priority: 85 }],
+    oldcontents: [{ candidates: ["oldString", "oldText", "old_text", "old", "search", "text"], priority: 80 }],
+    oldstring: [{ candidates: ["oldString", "oldText", "old_text", "old", "search"], priority: 95 }],
+    oldtext: [{ candidates: ["oldText", "oldString", "old", "search", "text"], priority: 85 }],
     pattern: [{ candidates: ["pattern", "query", "regex", "search"], priority: 80 }],
     query: [{ candidates: ["query", "pattern", "search", "prompt"], priority: 80 }],
     regex: [{ candidates: ["pattern", "regex", "query"], priority: 75 }],
@@ -2733,7 +2769,7 @@ function commonArgumentAliases(normalized: string): Array<{ candidates: string[]
 }
 
 function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ candidates: string[]; priority: number }> {
-  if (["glob", "fileglob", "filesearch", "findfiles"].includes(tool)) {
+  if (isGlobLikeToolName(tool)) {
     if (["globpattern", "filepattern", "glob", "include", "pattern", "query"].includes(normalized)) {
       return [{ candidates: ["pattern", "glob", "filePattern", "file_pattern", "query", "include"], priority: 98 }];
     }
@@ -2747,6 +2783,24 @@ function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ 
     }
     if (["globpattern", "glob", "include"].includes(normalized)) {
       return [{ candidates: ["include", "glob", "files", "pattern"], priority: 75 }];
+    }
+    if (["caseinsensitive", "ignorecase"].includes(normalized)) {
+      return [{ candidates: ["ignoreCase", "ignore_case", "caseInsensitive", "case_insensitive"], priority: 95 }];
+    }
+    if (["literal", "fixedstring"].includes(normalized)) {
+      return [{ candidates: ["literal", "fixedString", "fixed_string"], priority: 95 }];
+    }
+    if (["headlimit", "limit", "maxresults", "maxresult"].includes(normalized)) {
+      return [{ candidates: ["limit", "headLimit", "head_limit", "maxResults", "max_results"], priority: 90 }];
+    }
+    if (["context", "contextlines"].includes(normalized)) {
+      return [{ candidates: ["context", "contextLines", "context_lines"], priority: 90 }];
+    }
+    if (["contextbefore", "beforecontext"].includes(normalized)) {
+      return [{ candidates: ["contextBefore", "context_before", "beforeContext", "before_context"], priority: 90 }];
+    }
+    if (["contextafter", "aftercontext"].includes(normalized)) {
+      return [{ candidates: ["contextAfter", "context_after", "afterContext", "after_context"], priority: 90 }];
     }
   }
   if (["read", "readfile", "openfile"].includes(tool)) {
@@ -2767,10 +2821,10 @@ function toolSpecificArgumentAliases(tool: string, normalized: string): Array<{ 
       return [{ candidates: ["filePath", "path", "file", "filename"], priority: 95 }];
     }
     if (["oldstring", "oldtext", "oldcontents", "search", "searchstring"].includes(normalized)) {
-      return [{ candidates: ["oldString", "old", "search"], priority: 95 }];
+      return [{ candidates: ["oldString", "oldText", "old_text", "old", "search"], priority: 95 }];
     }
     if (["newstring", "newtext", "newcontents", "replacement", "replace", "content"].includes(normalized)) {
-      return [{ candidates: ["newString", "replacement", "content"], priority: 95 }];
+      return [{ candidates: ["newString", "newText", "new_text", "replacement", "content"], priority: 95 }];
     }
   }
   if (["bash", "shell", "terminal", "runterminalcmd"].includes(tool)) {
@@ -2805,9 +2859,11 @@ function toolNameAliases(normalized: string): string[] {
   const aliases: Record<string, string[]> = {
     createfile: ["write"],
     editfile: ["edit"],
-    fileglob: ["glob"],
-    filesearch: ["glob", "grep"],
-    findfiles: ["glob"],
+    fileglob: ["glob", "find"],
+    filesearch: ["glob", "grep", "find"],
+    find: ["glob"],
+    findfile: ["glob"],
+    findfiles: ["glob", "find"],
     openfile: ["read"],
     readfile: ["read"],
     replacefile: ["edit"],
@@ -2822,6 +2878,10 @@ function toolNameAliases(normalized: string): string[] {
     writefile: ["write"]
   };
   return aliases[normalized] ?? [];
+}
+
+function isGlobLikeToolName(normalized: string): boolean {
+  return ["glob", "fileglob", "filesearch", "find", "findfile", "findfiles", "globfiles"].includes(normalized);
 }
 
 function estimateTokens(chars: number): number {
