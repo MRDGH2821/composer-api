@@ -639,6 +639,53 @@ describe("Worker", () => {
     expect(String((sdkRequests[0].body as { prompt?: string }).prompt || "")).toContain("SDK-compatible OpenCode harness");
   });
 
+  it("times out stalled standard SDK bridge requests", async () => {
+    const db = new FakeD1();
+    const base = fakeDeps();
+    const env = {
+      ...makeEnv(db),
+      CURSOR_SDK_BRIDGE_URL: "https://bridge-timeout.test/sdk",
+      CURSOR_SDK_BRIDGE_TIMEOUT_MS: "5"
+    };
+    const deps: Deps = {
+      ...base.deps,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.hostname === "bridge-timeout.test" && url.pathname === "/sdk") {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        }
+        return base.deps.fetch(input, init);
+      }
+    };
+
+    const response = await handleRequest(
+      new Request("https://composer.test/opencodev2/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_bridge_timeout",
+          "x-session-affinity": "bridge-timeout-session"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "Say hello" }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "cursor_sdk_bridge_timeout"
+      }
+    });
+  });
+
   it("prefers the shared container bridge when the Durable Object binding exists", async () => {
     const db = new FakeD1();
     const bridgeRequests: Array<{ path: string; headers: Headers; body: Record<string, unknown> }> = [];

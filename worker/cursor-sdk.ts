@@ -68,6 +68,7 @@ const SDK_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const AGENT_MODE_AGENT = 1;
 const DEFAULT_SDK_CLIENT_VERSION = "sdk-1.0.13";
 const SDK_STREAM_START_TIMEOUT_MS = 25_000;
+const DEFAULT_SDK_BRIDGE_REQUEST_TIMEOUT_MS = 180_000;
 const SDK_TOOL_RETRY_ATTEMPTS = 3;
 
 const TOOL_CALL_SPECS: Record<number, ToolSpec> = {
@@ -519,31 +520,63 @@ async function cursorLocalSdkBridgeJson(
   });
   const bridgeBinding = env.CURSOR_SDK_BRIDGE_CONTAINER;
   const bridgeUrl = env.CURSOR_SDK_BRIDGE_URL?.trim();
-  const response = bridgeBinding
-    ? await cursorLocalSdkContainerBridgeJson(env, bridgeBinding, body)
-    : bridgeUrl
-      ? await cursorLocalSdkUrlBridgeJson(env, deps, bridgeUrl, body)
-      : undefined;
+  const response = await withCursorLocalSdkBridgeTimeout(env, (signal) =>
+    bridgeBinding
+      ? cursorLocalSdkContainerBridgeJson(env, bridgeBinding, body, signal)
+      : bridgeUrl
+        ? cursorLocalSdkUrlBridgeJson(env, deps, bridgeUrl, body, signal)
+        : Promise.resolve(undefined)
+  );
   if (!response) throw new HttpError("Cursor SDK bridge is not configured", 500, "cursor_sdk_bridge_missing");
   return parseCursorLocalSdkBridgeJsonResponse(response);
 }
 
-async function cursorLocalSdkUrlBridgeJson(env: Env, deps: Deps, bridgeUrl: string, body: string): Promise<Response> {
+async function cursorLocalSdkUrlBridgeJson(env: Env, deps: Deps, bridgeUrl: string, body: string, signal?: AbortSignal): Promise<Response> {
   return deps.fetch(bridgeUrl, {
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
-    body
+    body,
+    signal
   });
 }
 
-async function cursorLocalSdkContainerBridgeJson(env: Env, bridgeBinding: DurableObjectNamespace, body: string): Promise<Response> {
+async function cursorLocalSdkContainerBridgeJson(env: Env, bridgeBinding: DurableObjectNamespace, body: string, signal?: AbortSignal): Promise<Response> {
   const bridgeId = bridgeBinding.idFromName("shared");
   const bridge = bridgeBinding.get(bridgeId);
   return bridge.fetch("http://cursor-sdk-bridge.local/sdk", {
     method: "POST",
     headers: cursorLocalSdkBridgeHeaders(env),
-    body
+    body,
+    signal
   });
+}
+
+async function withCursorLocalSdkBridgeTimeout<T>(
+  env: Env,
+  run: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutMs = cursorLocalSdkBridgeTimeoutMs(env);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = run(controller.signal);
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new HttpError("Cursor SDK bridge request timed out.", 504, "cursor_sdk_bridge_timeout");
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    work.catch(() => undefined);
+  }
+}
+
+function cursorLocalSdkBridgeTimeoutMs(env: Env): number {
+  const value = Number.parseInt(env.CURSOR_SDK_BRIDGE_TIMEOUT_MS || "", 10);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_SDK_BRIDGE_REQUEST_TIMEOUT_MS;
 }
 
 async function parseCursorLocalSdkBridgeJsonResponse(response: Response): Promise<CursorSdkBridgeOutput> {

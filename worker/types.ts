@@ -9,6 +9,7 @@ export interface Env {
   CURSOR_CLIENT_VERSION?: string;
   CURSOR_LOCAL_AGENT_ENDPOINT?: string;
   CURSOR_SDK_BRIDGE_TOKEN?: string;
+  CURSOR_SDK_BRIDGE_TIMEOUT_MS?: string;
   CURSOR_SDK_BRIDGE_URL?: string;
   CURSOR_SDK_CLIENT_VERSION?: string;
   WAITLIST_API_TOKEN?: string;

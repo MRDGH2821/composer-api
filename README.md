@@ -161,6 +161,7 @@ ENCRYPTION_KEY="replace-with-a-long-random-secret"
 WAITLIST_API_TOKEN="optional-standard-agents-waitlist-token"
 CURSOR_SDK_BRIDGE_URL="optional-external-node-sdk-bridge-url"
 CURSOR_SDK_BRIDGE_TOKEN="optional-external-shared-bridge-token"
+CURSOR_SDK_BRIDGE_TIMEOUT_MS="180000"
 CURSOR_CLIENT_VERSION="2.6.22"
 CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13"
 ```
@@ -170,6 +171,9 @@ Run the optional SDK local-agent bridge in a local Node or Bun environment:
 ```bash
 npm run sdk:opencode-bridge
 ```
+
+The bridge process also accepts `CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS`; the default is
+`180000`.
 
 ## Cloudflare
 

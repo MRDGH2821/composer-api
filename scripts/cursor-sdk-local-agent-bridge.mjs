@@ -17,6 +17,7 @@ const port = parseInteger(process.env.CURSOR_SDK_BRIDGE_PORT, 8792);
 const bridgeToken = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";
 const maxJsonBytes = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_JSON_BYTES, 1024 * 1024);
 const maxAgents = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_AGENTS, 128);
+const runTimeoutMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS, 180 * 1000);
 const defaultCwd = process.env.CURSOR_SDK_WORKING_DIRECTORY || process.cwd();
 const clientMcpServerName = "client";
 
@@ -91,6 +92,29 @@ async function handleRequest(request, response) {
 }
 
 async function runLocalAgent(input) {
+  let activeRun = null;
+  let timer = null;
+  const work = runLocalAgentBody(input, (run) => {
+    activeRun = run;
+  });
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new HttpError("Cursor SDK bridge run timed out.", 504, "cursor_sdk_timeout");
+      reject(error);
+      if (activeRun) {
+        activeRun.cancel().catch(() => {});
+      }
+    }, runTimeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    work.catch(() => {});
+  }
+}
+
+async function runLocalAgentBody(input, onRun) {
   const agent = await getAgent(input);
   let run;
   let capturedToolCall = null;
@@ -122,6 +146,7 @@ async function runLocalAgent(input) {
       if (toolCall) await captureToolCall(toolCall);
     }
   });
+  onRun(run);
 
   if (cancelRequested) {
     try {
