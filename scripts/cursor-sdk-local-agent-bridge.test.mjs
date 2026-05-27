@@ -66,6 +66,25 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(isForwardableSDKToolCall(normalized)).toBe(true);
   });
 
+  it("normalizes direct forwarding MCP tool events back to SDK tool names", () => {
+    const normalized = normalizeSDKToolCall({
+      type: "client_shell",
+      args: {
+        command: "npm test",
+        timeout: 120000
+      }
+    });
+
+    expect(normalized).toEqual({
+      name: "shell",
+      arguments: {
+        command: "npm test",
+        timeout: 120000
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+  });
+
   it("normalizes SDK tool calls that use OpenAI-style argument keys", () => {
     const normalized = normalizeSDKToolCall({
       name: "glob",
@@ -120,6 +139,41 @@ describe("Cursor SDK local-agent bridge", () => {
         }
       }
     });
+
+    expect(normalized).toEqual({
+      name: "mcp",
+      arguments: {
+        providerIdentifier: "client",
+        toolName: "probe_write_file",
+        args: {
+          file_path: "marker.txt",
+          contents: "ok"
+        }
+      }
+    });
+    expect(isForwardableSDKToolCall(normalized)).toBe(true);
+  });
+
+  it("normalizes direct dynamic harness MCP tool events to SDK MCP calls", () => {
+    const normalized = normalizeSDKToolCall({
+      type: "probe_write_file",
+      args: {
+        file_path: "marker.txt",
+        contents: "ok"
+      }
+    }, [
+      {
+        name: "probe_write_file",
+        parameters: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            contents: { type: "string" }
+          },
+          required: ["file_path", "contents"]
+        }
+      }
+    ]);
 
     expect(normalized).toEqual({
       name: "mcp",

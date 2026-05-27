@@ -4572,6 +4572,88 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments[4]["description"] as? String, "Run npm install && npm run build")
     }
 
+    func testChatToolCallsSynthesizeSafeRequiredDefaultsForStrictHarnessSchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[
+            {"role":"system","content":"Working directory: /tmp/strict-project"},
+            {"role":"user","content":"write app files and inspect source"}
+          ],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"workspace_writer",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "mode":{"type":"string","enum":["create","overwrite"]},
+                    "absolutePath":{"type":"string","description":"Absolute path to the file"},
+                    "content":{"type":"string"},
+                    "description":{"type":"string"},
+                    "overwrite":{"type":"boolean"}
+                  },
+                  "required":["mode","absolutePath","content","description","overwrite"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"find_files",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "root":{"type":"string"},
+                    "limit":{"type":"integer"},
+                    "recursive":{"type":"boolean"},
+                    "description":{"type":"string"}
+                  },
+                  "required":["pattern","root","limit","recursive","description"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_strict_defaults",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "write", arguments: [
+                    "path": .string("src/App.jsx"),
+                    "fileText": .string("export default function App() { return <main /> }")
+                ]),
+                CursorToolCall(name: "glob", arguments: [
+                    "targetDirectory": .string("src/**/*.jsx")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }, ["workspace_writer", "find_files"])
+
+        let arguments = try toolCalls.map { try decodedArguments(try XCTUnwrap($0["function"] as? [String: Any])) }
+        XCTAssertEqual(arguments[0]["mode"] as? String, "create")
+        XCTAssertEqual(arguments[0]["absolutePath"] as? String, "/tmp/strict-project/src/App.jsx")
+        XCTAssertEqual(arguments[0]["content"] as? String, "export default function App() { return <main /> }")
+        XCTAssertEqual(arguments[0]["description"] as? String, "Write /tmp/strict-project/src/App.jsx")
+        XCTAssertEqual(arguments[0]["overwrite"] as? Bool, false)
+        XCTAssertEqual(arguments[1]["pattern"] as? String, "**/*.jsx")
+        XCTAssertEqual(arguments[1]["root"] as? String, "/tmp/strict-project/src")
+        XCTAssertEqual((arguments[1]["limit"] as? NSNumber)?.doubleValue, 200)
+        XCTAssertEqual(arguments[1]["recursive"] as? Bool, false)
+        XCTAssertEqual(arguments[1]["description"] as? String, "Find matching files")
+    }
+
     func testChatToolCallsMapSDKAliasNamesToClientSchemas() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {

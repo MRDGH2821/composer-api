@@ -2136,10 +2136,10 @@ public enum OpenAICompatibility {
         guard !properties.isEmpty else { return arguments }
 
         if let commandStyleFile = commandStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
-            return commandStyleFile
+            return finalizedToolArguments(commandStyleFile, source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
         if let patchStyleFile = patchStyleFileArguments(arguments, sdkToolName: sdkToolName, tool: tool, properties: properties, context: context) {
-            return patchStyleFile
+            return finalizedToolArguments(patchStyleFile, source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
         var output: [String: JSONValue] = [:]
@@ -2148,15 +2148,15 @@ public enum OpenAICompatibility {
         let allowAdditionalProperties = parameterAllowsAdditionalProperties(tool)
 
         if canonical != "shell", selectedCanonical == "shell" {
-            return shellFallbackArguments(arguments, sdkToolName: sdkToolName, tool: tool)
+            return finalizedToolArguments(shellFallbackArguments(arguments, sdkToolName: sdkToolName, tool: tool), source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
         if canonical == "ls", selectedCanonical == "glob" {
-            return listAsGlobArguments(arguments, tool: tool, context: context)
+            return finalizedToolArguments(listAsGlobArguments(arguments, tool: tool, context: context), source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
         if canonical == "mcp", selectedCanonical != "mcp" {
-            return specificMCPToolArguments(arguments, tool: tool, context: context)
+            return finalizedToolArguments(specificMCPToolArguments(arguments, tool: tool, context: context), source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
         }
 
         func copy(_ source: String, as candidates: [String]) {
@@ -2287,7 +2287,211 @@ public enum OpenAICompatibility {
             output = normalizeTodoWriteArguments(output)
         }
 
-        return output.isEmpty ? arguments : output
+        return finalizedToolArguments(output.isEmpty ? arguments : output, source: arguments, sdkToolName: sdkToolName, tool: tool, context: context)
+    }
+
+    private static func finalizedToolArguments(
+        _ arguments: [String: JSONValue],
+        source: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        context: ToolCallContext?
+    ) -> [String: JSONValue] {
+        var output = arguments
+        fillMissingRequiredSchemaArguments(&output, source: source, sdkToolName: sdkToolName, tool: tool, context: context)
+        return output
+    }
+
+    private static func fillMissingRequiredSchemaArguments(
+        _ output: inout [String: JSONValue],
+        source: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        context: ToolCallContext?
+    ) {
+        let shape = parameterSchemaShape(tool.parameters)
+        guard !shape.required.isEmpty else { return }
+        for required in shape.required {
+            let property = propertyName(matching: [required], in: shape.propertyOrder) ?? required
+            let schema = shape.properties[property]
+            if argumentValueSatisfiesSchema(output[property], schema: schema, required: true) {
+                continue
+            }
+            if let copied = firstArgument(in: source, keys: [property])?.value,
+               argumentValueSatisfiesSchema(copied, schema: schema, required: true) {
+                output[property] = normalizeToolArgumentValue(copied, property: property, tool: tool, context: context)
+                continue
+            }
+            guard let synthesized = synthesizedRequiredArgument(
+                property: property,
+                schema: schema,
+                output: output,
+                source: source,
+                sdkToolName: sdkToolName,
+                tool: tool,
+                context: context,
+                depth: 0
+            ) else {
+                continue
+            }
+            let normalized = normalizeToolArgumentValue(synthesized, property: property, tool: tool, context: context)
+            if argumentValueSatisfiesSchema(normalized, schema: schema, required: true) {
+                output[property] = normalized
+            }
+        }
+    }
+
+    private static func synthesizedRequiredArgument(
+        property: String,
+        schema: JSONValue?,
+        output: [String: JSONValue],
+        source: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        context: ToolCallContext?,
+        depth: Int
+    ) -> JSONValue? {
+        guard depth <= 3 else { return nil }
+        guard case .object(let object)? = schema else { return nil }
+        if let value = object["default"] {
+            return value
+        }
+        if let value = object["const"] {
+            return value
+        }
+        if case .array(let values)? = object["enum"],
+           let first = values.first {
+            return first
+        }
+
+        let canonical = canonicalToolName(sdkToolName)
+        let normalizedProperty = normalizedName(property)
+        let types = schemaJSONTypes(object)
+        let hasType: (String) -> Bool = { type in types.isEmpty || types.contains(type) }
+
+        if ["description", "desc", "summary", "reason", "explanation"].contains(normalizedProperty), hasType("string") {
+            return .string(requiredDescriptionArgument(sdkToolName: sdkToolName, output: output, source: source))
+        }
+        if ["cwd", "workdir", "workingdirectory"].contains(normalizedProperty), hasType("string") {
+            return .string(".")
+        }
+        if ["timeout", "timeoutms", "timeoutmilliseconds", "timeoutseconds", "seconds"].contains(normalizedProperty),
+           hasType("number") || hasType("integer") {
+            let timeout = object["minimum"]?.integerValue.map { Double(max(1, $0)) } ?? 120_000
+            return .number(timeout)
+        }
+        if ["limit", "maxresults", "maxlines", "linecount", "headlimit", "count"].contains(normalizedProperty),
+           hasType("number") || hasType("integer") {
+            return .number(object["minimum"]?.integerValue.map { Double(max(1, $0)) } ?? 200)
+        }
+        if ["offset", "start", "startline"].contains(normalizedProperty),
+           hasType("number") || hasType("integer") {
+            return .number(object["minimum"]?.integerValue.map(Double.init) ?? 0)
+        }
+        if ["caseinsensitive", "ignorecase", "literal", "fixedstring", "recursive", "recurse", "replaceall", "overwrite", "includelinenumbers"].contains(normalizedProperty),
+           hasType("boolean") {
+            return .bool(false)
+        }
+        if ["path", "directory", "dir", "root", "basepath", "searchpath"].contains(normalizedProperty),
+           ["glob", "grep", "ls", "semsearch"].contains(canonical),
+           hasType("string") {
+            return .string(".")
+        }
+        if ["pattern", "glob", "globpattern", "fileglob", "query"].contains(normalizedProperty),
+           canonical == "glob",
+           hasType("string") {
+            return .string("**/*")
+        }
+        if (types.contains("array") || object["items"] != nil || object["prefixItems"] != nil),
+           (object["minItems"]?.integerValue ?? 0) <= 0 {
+            return .array([])
+        }
+        if types.contains("object") || object["properties"] != nil || object["required"] != nil {
+            return synthesizedObjectArgument(
+                schema: object,
+                source: source,
+                sdkToolName: sdkToolName,
+                tool: tool,
+                context: context,
+                depth: depth + 1
+            )
+        }
+        return nil
+    }
+
+    private static func synthesizedObjectArgument(
+        schema: [String: JSONValue],
+        source: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec,
+        context: ToolCallContext?,
+        depth: Int
+    ) -> JSONValue? {
+        let properties: [String: JSONValue]
+        if case .object(let object)? = schema["properties"] {
+            properties = object
+        } else {
+            properties = [:]
+        }
+        let required: [String]
+        if case .array(let values)? = schema["required"] {
+            required = values.compactMap(\.stringValue)
+        } else {
+            required = []
+        }
+        guard !properties.isEmpty || required.isEmpty else { return nil }
+        var output: [String: JSONValue] = [:]
+        let propertyOrder = Array(properties.keys)
+        for requiredProperty in required {
+            let property = propertyName(matching: [requiredProperty], in: propertyOrder) ?? requiredProperty
+            guard let value = synthesizedRequiredArgument(
+                property: property,
+                schema: properties[property],
+                output: output,
+                source: source,
+                sdkToolName: sdkToolName,
+                tool: tool,
+                context: context,
+                depth: depth
+            ) else {
+                return nil
+            }
+            output[property] = value
+        }
+        return .object(output)
+    }
+
+    private static func requiredDescriptionArgument(
+        sdkToolName: String,
+        output: [String: JSONValue],
+        source: [String: JSONValue]
+    ) -> String {
+        let canonical = canonicalToolName(sdkToolName)
+        let command = firstArgument(in: output, keys: shellCommandAliases())?.value.stringValue
+            ?? firstArgument(in: source, keys: shellCommandAliases())?.value.stringValue
+        if canonical == "shell", let command {
+            return shellToolDescription(for: command)
+        }
+        let path = firstArgument(in: output, keys: pathPropertyAliases())?.value.stringValue
+            ?? firstArgument(in: source, keys: pathPropertyAliases())?.value.stringValue
+        switch canonical {
+        case "write":
+            return path.map { "Write \($0)" } ?? "Write file"
+        case "read":
+            return path.map { "Read \($0)" } ?? "Read file"
+        case "edit":
+            return path.map { "Edit \($0)" } ?? "Edit file"
+        case "delete":
+            return path.map { "Delete \($0)" } ?? "Delete file"
+        case "glob":
+            return "Find matching files"
+        case "grep":
+            return "Search files"
+        case "ls":
+            return "List files"
+        default:
+            return "Run local tool"
+        }
     }
 
     private static func expandedToolArguments(_ arguments: [String: JSONValue]) -> [String: JSONValue] {

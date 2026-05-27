@@ -162,7 +162,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
 
   const captureToolCall = async (toolCall) => {
     if (capturedToolCall || !toolCall) return;
-    const normalized = normalizeSDKToolCall(toolCall);
+    const normalized = normalizeSDKToolCall(toolCall, input.clientTools);
     if (!normalized || !isForwardableSDKToolCall(normalized)) return;
     capturedToolCall = normalized;
     if (onEvent) onEvent({ type: "tool_call", toolCall: capturedToolCall });
@@ -490,12 +490,14 @@ function toolCallFromDelta(update) {
   return toolCall;
 }
 
-function normalizeSDKToolCall(toolCall) {
+function normalizeSDKToolCall(toolCall, clientTools = []) {
   const name = typeof toolCall.type === "string" ? toolCall.type : typeof toolCall.name === "string" ? toolCall.name : "";
   if (!name) return null;
   const args = objectArgumentFrom(toolCall, "args", "arguments", "input", "parameters", "params");
   const clientMcpTool = normalizeClientMcpToolCall(name, args);
   if (clientMcpTool) return clientMcpTool;
+  const directClientTool = normalizeDirectClientToolCall(name, args, clientTools);
+  if (directClientTool) return directClientTool;
   return {
     name,
     arguments: normalizeArguments(args)
@@ -522,6 +524,27 @@ function normalizeClientMcpToolCall(name, args) {
   return {
     name: sdkName,
     arguments: normalizeArguments(payload)
+  };
+}
+
+function normalizeDirectClientToolCall(name, args, clientTools = []) {
+  const sdkName = sdkToolNameFromClientMcpTool(name);
+  const normalizedName = normalizeToolName(name);
+  const matchingClientTool = clientTools.find((tool) => normalizeToolName(tool.name) === normalizedName);
+  if (sdkName && (normalizedName.startsWith("client") || matchingClientTool)) {
+    return {
+      name: sdkName,
+      arguments: normalizeArguments(args)
+    };
+  }
+  if (!matchingClientTool) return null;
+  return {
+    name: "mcp",
+    arguments: {
+      providerIdentifier: clientMcpServerName,
+      toolName: matchingClientTool.name,
+      args: normalizeArguments(args)
+    }
   };
 }
 
