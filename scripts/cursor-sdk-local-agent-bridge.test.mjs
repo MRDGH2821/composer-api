@@ -4,6 +4,8 @@ import {
   bridgePrompt,
   clientForwardingMcpServerSource,
   clientMcpToolDefinitions,
+  localAgentCreateOptions,
+  localAgentSendOptions,
   isForwardableSDKToolCall,
   normalizeSDKToolCall,
   toolCallFromDelta,
@@ -357,5 +359,27 @@ describe("Cursor SDK local-agent bridge", () => {
 
     expect(prompt).toContain("client_shell");
     expect(prompt).toContain("Do not use the SDK built-in shell");
+  });
+
+  it("uses SDK-compatible local options that do not wedge local runs", () => {
+    const input = {
+      apiKey: "test-key",
+      model: "composer-2.5",
+      workingDirectory: "/tmp/project",
+      clientTools: []
+    };
+
+    const createOptions = localAgentCreateOptions(input);
+    const sendOptions = localAgentSendOptions(input);
+
+    expect(createOptions.local).toEqual({
+      cwd: "/tmp/project"
+    });
+    expect(createOptions.local).not.toHaveProperty("sandboxOptions");
+    expect(createOptions.local).not.toHaveProperty("settingSources");
+    expect(sendOptions).toEqual({
+      model: { id: "composer-2.5" }
+    });
+    expect(sendOptions).not.toHaveProperty("local");
   });
 });

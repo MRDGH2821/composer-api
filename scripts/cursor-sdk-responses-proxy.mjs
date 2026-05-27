@@ -257,7 +257,7 @@ async function getAgent({ apiKey, model, previous }) {
       const resumed = await Agent.resume(previousAgentId, {
         apiKey,
         model: { id: model },
-        local: { cwd: workspaceCwd, sandboxOptions: { enabled: false } }
+        local: { cwd: workspaceCwd }
       });
       agentCache.set(resumed.agentId, resumed);
       return resumed;
@@ -271,7 +271,7 @@ async function getAgent({ apiKey, model, previous }) {
     apiKey,
     model: { id: model },
     name: "Standard Agents Responses proxy",
-    local: { cwd: workspaceCwd, sandboxOptions: { enabled: false } }
+    local: { cwd: workspaceCwd }
   });
   agentCache.set(created.agentId, created);
   return created;

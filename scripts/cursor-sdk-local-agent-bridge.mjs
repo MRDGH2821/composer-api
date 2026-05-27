@@ -34,6 +34,8 @@ export {
   bridgePrompt,
   clientMcpToolDefinitions,
   clientForwardingMcpServerSource,
+  localAgentCreateOptions,
+  localAgentSendOptions,
   isForwardableSDKToolCall,
   normalizeSDKToolCall,
   startServer,
@@ -156,7 +158,8 @@ async function runLocalAgent(input, onEvent) {
 }
 
 async function runLocalAgentBody(input, onRun, onEvent) {
-  const agent = await getAgent(input);
+  const agentEntry = await getAgent(input);
+  const agent = agentEntry.agent;
   let run;
   let capturedToolCall = null;
   let cancelRequested = false;
@@ -180,8 +183,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
   };
 
   run = await agent.send(input.prompt, {
-    model: { id: input.model },
-    local: { force: true },
+    ...localAgentSendOptions(input),
     idempotencyKey: input.requestId,
     onDelta: async ({ update }) => {
       const toolCall = toolCallFromDelta(update);
@@ -213,6 +215,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
   }
 
   if (capturedToolCall) {
+    evictAgent(agentEntry.cacheKey, agent);
     return {
       text: "",
       toolCalls: [capturedToolCall],
@@ -224,6 +227,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
 
   const result = await run.wait();
   if (result.status === "error") {
+    evictAgent(agentEntry.cacheKey, agent);
     throw new HttpError("Cursor SDK run failed", 502, "cursor_sdk_error");
   }
   if (!text && typeof result.result === "string") text = result.result;
@@ -241,23 +245,41 @@ async function getAgent(input) {
   const cached = agentCache.get(cacheKey);
   if (cached) {
     cached.touchedAt = Date.now();
-    return cached.agent;
+    return { agent: cached.agent, cacheKey };
   }
 
-  const agent = await Agent.create({
+  const agent = await Agent.create(localAgentCreateOptions(input));
+  agentCache.set(cacheKey, { agent, touchedAt: Date.now() });
+  evictAgents();
+  return { agent, cacheKey };
+}
+
+function evictAgent(cacheKey, agent) {
+  const cached = agentCache.get(cacheKey);
+  if (cached?.agent === agent) {
+    agentCache.delete(cacheKey);
+  }
+  try {
+    agent.close();
+  } catch {}
+}
+
+function localAgentCreateOptions(input) {
+  return {
     apiKey: input.apiKey,
     model: { id: input.model },
     name: "API for Cursor local bridge",
     mcpServers: clientForwardingMcpServers(input.clientTools),
     local: {
-      cwd: input.workingDirectory,
-      sandboxOptions: { enabled: false },
-      settingSources: []
+      cwd: input.workingDirectory
     }
-  });
-  agentCache.set(cacheKey, { agent, touchedAt: Date.now() });
-  evictAgents();
-  return agent;
+  };
+}
+
+function localAgentSendOptions(input) {
+  return {
+    model: { id: input.model }
+  };
 }
 
 function clientForwardingMcpServers(clientTools = []) {

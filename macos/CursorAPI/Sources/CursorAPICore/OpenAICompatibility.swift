@@ -2466,14 +2466,14 @@ public enum OpenAICompatibility {
            hasType("string") {
             return .string("**/*")
         }
-        if types.contains("array") || object["items"] != nil || object["prefixItems"] != nil {
-            let minItems = object["minItems"]?.integerValue ?? 0
+        if let arraySchema = preferredArraySchema(object) {
+            let minItems = arraySchema["minItems"]?.integerValue ?? 0
             if minItems <= 0 {
                 return .array([])
             }
             if let array = synthesizedRequiredArrayArgument(
                 property: property,
-                schema: object,
+                schema: arraySchema,
                 source: source,
                 sdkToolName: sdkToolName,
                 tool: tool,
@@ -3020,7 +3020,7 @@ public enum OpenAICompatibility {
         guard case .object(let schema)? = parameterPropertySchema(property, tool: tool) else {
             return false
         }
-        if schema["items"] != nil || schema["prefixItems"] != nil {
+        if directSchemaLooksArray(schema) {
             return true
         }
         let types = schemaJSONTypes(schema).filter { $0 != "null" }
@@ -3038,7 +3038,8 @@ public enum OpenAICompatibility {
         guard case .object(let schema)? = parameterPropertySchema(property, tool: tool) else {
             return 0
         }
-        return max(0, schema["minItems"]?.integerValue ?? 0)
+        let arraySchema = preferredArraySchema(schema) ?? schema
+        return max(0, arraySchema["minItems"]?.integerValue ?? 0)
     }
 
     private static func normalizeTimeoutForSecondsTool(_ value: Double, sourceProperty: String?) -> Double {
@@ -3604,12 +3605,55 @@ public enum OpenAICompatibility {
         if case .array(let values)? = schema["type"] {
             return values.compactMap(\.stringValue)
         }
+        let composed = composedSchemaObjects(schema)
+        if !composed.isEmpty {
+            return composed.reduce(into: []) { output, object in
+                for type in schemaJSONTypes(object) where !output.contains(type) {
+                    output.append(type)
+                }
+            }
+        }
         return []
     }
 
     private static func schemaAllowsJSONType(_ schema: [String: JSONValue], type: String) -> Bool {
         let types = schemaJSONTypes(schema)
         return types.isEmpty || types.contains(type)
+    }
+
+    private static func preferredArraySchema(_ schema: [String: JSONValue]) -> [String: JSONValue]? {
+        if directSchemaLooksArray(schema) {
+            return schema
+        }
+        let arraySchemas = composedSchemaObjects(schema).filter { object in
+            let types = schemaJSONTypes(object).filter { $0 != "null" }
+            return directSchemaLooksArray(object)
+                || (!types.isEmpty && types.allSatisfy { $0 == "array" })
+        }
+        return arraySchemas.first
+    }
+
+    private static func directSchemaLooksArray(_ schema: [String: JSONValue]) -> Bool {
+        if schema["items"] != nil || schema["prefixItems"] != nil {
+            return true
+        }
+        let directTypes: [String]
+        if let value = schema["type"]?.stringValue {
+            directTypes = [value]
+        } else if case .array(let values)? = schema["type"] {
+            directTypes = values.compactMap(\.stringValue)
+        } else {
+            directTypes = []
+        }
+        let nonNull = directTypes.filter { $0 != "null" }
+        return !nonNull.isEmpty && nonNull.allSatisfy { $0 == "array" }
+    }
+
+    private static func composedSchemaObjects(_ schema: [String: JSONValue]) -> [[String: JSONValue]] {
+        (composedParameterSchemas(schema["anyOf"]) + composedParameterSchemas(schema["oneOf"]) + composedParameterSchemas(schema["allOf"])).compactMap { value in
+            guard case .object(let object) = value else { return nil }
+            return object
+        }
     }
 
     private static func jsonValue(_ value: JSONValue, matchesType type: String) -> Bool {
