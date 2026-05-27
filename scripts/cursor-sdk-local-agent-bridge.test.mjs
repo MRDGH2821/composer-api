@@ -55,6 +55,21 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(isForwardableSDKToolCall({ name: "glob", arguments: { globPattern: "**/*" } })).toBe(true);
   });
 
+  it("requires complete non-file SDK builtin tool arguments before forwarding", () => {
+    expect(isForwardableSDKToolCall({ name: "readLints", arguments: { cwd: "." } })).toBe(false);
+    expect(isForwardableSDKToolCall({ name: "readLints", arguments: { paths: [] } })).toBe(false);
+    expect(isForwardableSDKToolCall({ name: "readLints", arguments: { paths: ["src/App.tsx"] } })).toBe(true);
+    expect(isForwardableSDKToolCall({ name: "readLints", arguments: { filePath: "src/App.tsx" } })).toBe(true);
+
+    expect(isForwardableSDKToolCall({ name: "semSearch", arguments: { targetDirectories: ["src"] } })).toBe(false);
+    expect(isForwardableSDKToolCall({ name: "semSearch", arguments: { query: "submit button" } })).toBe(true);
+    expect(isForwardableSDKToolCall({ name: "semSearch", arguments: { search_query: "submit button", targetDirectories: ["src"] } })).toBe(true);
+
+    expect(isForwardableSDKToolCall({ name: "todowrite", arguments: { status: "in_progress" } })).toBe(false);
+    expect(isForwardableSDKToolCall({ name: "todowrite", arguments: { todos: [] } })).toBe(true);
+    expect(isForwardableSDKToolCall({ name: "todowrite", arguments: { taskList: [{ content: "Build app" }] } })).toBe(true);
+  });
+
   it("normalizes local client MCP forwarding tools back to SDK tool names", () => {
     const normalized = normalizeSDKToolCall({
       type: "mcp",

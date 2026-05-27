@@ -1208,9 +1208,11 @@ function isForwardableSDKToolCall(toolCall, clientTools = []) {
       }
       return mcpClientToolPayloadIsComplete(args, clientTools);
     case "readlints":
+      return hasStringOrStringArray(args, "paths", "files", "filePaths", "file_paths", "path", "file_path", "filePath", "filename", "file");
     case "semsearch":
+      return hasString(args, "query", "pattern", "search", "searchQuery", "search_query", "semanticQuery", "semantic_query", "prompt");
     case "todowrite":
-      return Object.keys(args).length > 0;
+      return hasArray(args, "todos", "todoList", "todo_list", "todoItems", "todo_items", "items", "tasks", "taskList", "task_list");
     default:
       return false;
   }
@@ -1418,6 +1420,18 @@ function firstMatchingKey(source, ...keys) {
 
 function hasStringAllowEmpty(args, ...keys) {
   return keys.some((key) => typeof args[key] === "string");
+}
+
+function hasArray(args, ...keys) {
+  return keys.some((key) => Array.isArray(args[key]));
+}
+
+function hasStringOrStringArray(args, ...keys) {
+  return keys.some((key) => {
+    const value = args[key];
+    if (typeof value === "string") return value.trim().length > 0;
+    return Array.isArray(value) && value.some((item) => typeof item === "string" && item.trim().length > 0);
+  });
 }
 
 function hasGlobString(args, ...keys) {
