@@ -72,7 +72,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                     }
                     let output: CursorSDKOutput
                     do {
-                        output = try await runSDKRequest(
+                        output = try await runSDKRequestWithToolRetry(
                             agentID: agentID,
                             runID: runID,
                             prepared: prepared,
@@ -85,7 +85,7 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                         let refreshedToken = try await Self.accessTokenCache.token(for: apiKey, origin: tokenOrigin) {
                             try await exchangeCursorAPIKey(apiKey, settings: settings)
                         }
-                        output = try await runSDKRequest(
+                        output = try await runSDKRequestWithToolRetry(
                             agentID: agentID,
                             runID: runID,
                             prepared: prepared,
@@ -101,6 +101,69 @@ public struct LocalCursorSDKHarness: CursorSDKHarness {
                 }
             }
         }
+    }
+
+    private func runSDKRequestWithToolRetry(
+        agentID: String,
+        runID: String,
+        prepared: PreparedChatRequest,
+        accessToken: String,
+        settings: CursorAPISettings,
+        onEvent: @escaping @Sendable (CursorSDKStreamEvent) -> Void
+    ) async throws -> CursorSDKOutput {
+        guard shouldRetryMissingLocalTool(prepared) else {
+            return try await runSDKRequest(
+                agentID: agentID,
+                runID: runID,
+                prepared: prepared,
+                accessToken: accessToken,
+                settings: settings,
+                onEvent: onEvent
+            )
+        }
+
+        let buffered = LockedEventBuffer()
+        let first = try await runSDKRequest(
+            agentID: agentID,
+            runID: runID,
+            prepared: prepared,
+            accessToken: accessToken,
+            settings: settings,
+            onEvent: { buffered.append($0) }
+        )
+        if !first.toolCalls.isEmpty {
+            for event in buffered.events() {
+                onEvent(event)
+            }
+            return first
+        }
+
+        var retry = prepared
+        retry.prompt = retryPrompt(afterMissingToolAttempt: prepared)
+        retry.promptCharacters = retry.prompt.count
+        return try await runSDKRequest(
+            agentID: agentID,
+            runID: Self.newRunID(),
+            prepared: retry,
+            accessToken: accessToken,
+            settings: settings,
+            onEvent: onEvent
+        )
+    }
+
+    private func shouldRetryMissingLocalTool(_ prepared: PreparedChatRequest) -> Bool {
+        !prepared.tools.isEmpty && prepared.prompt.contains("LOCAL TOOL REQUIRED FOR THE LATEST USER REQUEST")
+    }
+
+    private func retryPrompt(afterMissingToolAttempt prepared: PreparedChatRequest) -> String {
+        [
+            prepared.prompt,
+            "",
+            "TOOL CALL RETRY:",
+            "Your previous SDK response did not emit a local tool call, but the latest user request requires local execution.",
+            "Do not answer in prose. Emit exactly one SDK tool call now using the allowed client tool inventory above, then wait for the local tool result.",
+            "If a specific client tool was named in the request, use that exact tool mapping and do not substitute shell, glob, or prose."
+        ].joined(separator: "\n")
     }
 
     static func newRunID() -> String {
@@ -538,6 +601,23 @@ public struct CursorSDKFrameDecoder: Sendable {
             return CursorSDKToolSpec.isEmittable(toolCall) ? toolCall : nil
         }
         return nil
+    }
+}
+
+private final class LockedEventBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [CursorSDKStreamEvent] = []
+
+    func append(_ event: CursorSDKStreamEvent) {
+        lock.withLock {
+            storage.append(event)
+        }
+    }
+
+    func events() -> [CursorSDKStreamEvent] {
+        lock.withLock {
+            storage
+        }
     }
 }
 

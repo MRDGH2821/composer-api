@@ -13,6 +13,7 @@ export interface PreparedRequest {
   promptChars: number;
   responseMetadata: Record<string, unknown>;
   tools: OpenAiToolSpec[];
+  requiresLocalTool: boolean;
 }
 
 export interface OpenAiToolSpec {
@@ -128,7 +129,8 @@ export function prepareChatRequest(body: unknown, cursorModel: { id: string } | 
       temperature: numberOrNull(record.temperature),
       top_p: numberOrNull(record.top_p)
     },
-    tools
+    tools,
+    requiresLocalTool: false
   };
 }
 
@@ -193,7 +195,8 @@ export function prepareOpencodeSdkChatRequest(body: unknown, cursorModel: { id: 
       temperature: numberOrNull(record.temperature),
       top_p: numberOrNull(record.top_p)
     },
-    tools
+    tools,
+    requiresLocalTool: workspaceMutationRequired && !workspaceMutationDone
   };
 }
 
@@ -230,7 +233,8 @@ export function prepareResponsesRequest(body: unknown, cursorModel: { id: string
       top_p: numberOrNull(record.top_p),
       text: isRecord(record.text) ? record.text : { format: { type: "text" } }
     },
-    tools: []
+    tools: [],
+    requiresLocalTool: false
   };
 }
 
@@ -1225,6 +1229,18 @@ function resolveToolSpec(emittedName: string, args: Record<string, unknown>, too
   if (canonicalToolName(emittedName) === "mcp") {
     return resolveSpecificMCPTool(args, tools);
   }
+  if (canonicalToolName(emittedName) === "ls") {
+    const glob = tools.find((tool) => schemaLooksCompatible("glob", tool));
+    if (glob) return glob;
+  }
+  const compatible = tools
+    .map((tool) => ({ tool, score: schemaCompatibilityScore(emittedName, tool) }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.tool;
+  if (compatible) return compatible;
+  if (canEmulateWithShell(emittedName)) {
+    return tools.find((tool) => schemaLooksCompatible("shell", tool));
+  }
   return undefined;
 }
 
@@ -1234,7 +1250,20 @@ function normalizeToolName(value: string): string {
 
 function canonicalToolName(value: string): string {
   const normalized = normalizeToolName(value);
-  if (normalized === "callmcptool") return "mcp";
+  if (["bash", "runshellcommand", "runterminalcommand", "runterminalcmd", "terminal", "execute", "executecommand", "runcommand", "run"].includes(normalized)) {
+    return "shell";
+  }
+  if (["writefile", "createfile", "strreplaceeditor"].includes(normalized)) return "write";
+  if (["readfile", "openfile", "viewfile"].includes(normalized)) return "read";
+  if (["editfile", "replacefile", "searchreplace"].includes(normalized)) return "edit";
+  if (["deletefile", "removefile"].includes(normalized)) return "delete";
+  if (["search", "searchfiles", "searchfilesystem", "ripgrep", "rg"].includes(normalized)) return "grep";
+  if (["globfiles", "fileglob", "filesearch", "findfiles"].includes(normalized)) return "glob";
+  if (["list", "listfiles", "listdirectory", "listdir"].includes(normalized)) return "ls";
+  if (["readlints", "diagnostics", "getdiagnostics"].includes(normalized)) return "readlints";
+  if (["callmcptool"].includes(normalized)) return "mcp";
+  if (["semanticsearch", "semsearch", "searchcode"].includes(normalized)) return "semsearch";
+  if (["updatetodos", "updatetodostoolcall", "writetodos", "todowrite", "todowritetoolcall"].includes(normalized)) return "todowrite";
   return normalized;
 }
 
@@ -1249,6 +1278,12 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     ? expandToolArguments(recordArgumentValue(args.args) ?? {})
     : expandToolArguments(args);
   if (!schema.properties.length) return argsToNormalize;
+  if (emittedCanonical !== "shell" && selectedCanonical === "shell") {
+    return shellFallbackArguments(argsToNormalize, emittedName, tool);
+  }
+  if (emittedCanonical === "ls" && selectedCanonical === "glob") {
+    return listAsGlobArguments(argsToNormalize, tool);
+  }
 
   const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
   const output: Record<string, unknown> = {};
@@ -1266,6 +1301,190 @@ function normalizeToolArguments(args: Record<string, unknown>, tool: OpenAiToolS
     }
   }
   return sanitizeNormalizedToolArguments(applyRequiredToolDefaults(output, schema.required, tool, argsToNormalize), tool, argsToNormalize);
+}
+
+function schemaLooksCompatible(emittedName: string, tool: OpenAiToolSpec): boolean {
+  const schema = toolParameterSchema(tool);
+  if (!schema.properties.length) return false;
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  const has = (candidates: string[]) => Boolean(firstMatchingProperty(candidates, schema.properties, normalizedProperties));
+  switch (canonicalToolName(emittedName)) {
+    case "shell":
+      return has(["command", "cmd", "script", "input"]);
+    case "write":
+      return has(pathCandidates()) && has(["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content"]);
+    case "read":
+    case "delete":
+      return has(pathCandidates());
+    case "grep":
+      return has(["pattern", "query", "regex", "search"]);
+    case "glob":
+      return has(["globPattern", "glob_pattern", "pattern", "glob"]);
+    case "ls":
+      return has([...pathCandidates(), "directory", "dir"]);
+    case "readlints":
+      return has(["paths", "files", "filePaths", "file_paths"]);
+    case "mcp":
+      return has(["toolName", "tool_name", "tool", "name"]);
+    case "semsearch":
+      return has(["query", "pattern", "search"]);
+    case "todowrite":
+      return has(["todos", "todoList", "todo_list", "items"]);
+    default:
+      return false;
+  }
+}
+
+function schemaCompatibilityScore(emittedName: string, tool: OpenAiToolSpec): number {
+  if (!schemaLooksCompatible(emittedName, tool)) return 0;
+  const emittedCanonical = canonicalToolName(emittedName);
+  const toolCanonical = canonicalToolName(tool.name);
+  if (toolCanonical === emittedCanonical) return 100;
+  if (toolNameAliases(normalizeToolName(emittedName)).includes(normalizeToolName(tool.name))) return 95;
+  if (emittedCanonical === "write" && normalizeToolName(tool.name).includes("edit")) return 80;
+  if (emittedCanonical === "ls" && toolCanonical === "read") return 20;
+  return 50;
+}
+
+function canEmulateWithShell(emittedName: string): boolean {
+  return ["write", "read", "delete", "grep", "glob", "ls", "semsearch"].includes(canonicalToolName(emittedName));
+}
+
+function shellFallbackArguments(
+  args: Record<string, unknown>,
+  emittedName: string,
+  tool: OpenAiToolSpec | undefined
+): Record<string, unknown> {
+  const schema = toolParameterSchema(tool);
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  const commandKey = firstMatchingProperty(["command", "cmd", "script", "input"], schema.properties, normalizedProperties);
+  const command = shellFallbackCommand(args, emittedName);
+  if (!commandKey || !command) return args;
+  const output: Record<string, unknown> = { [commandKey]: command };
+  const workdir = firstArg(args, ["workingDirectory", "working_directory", "workdir", "cwd", "directory"]);
+  const workdirKey = firstMatchingProperty(["workingDirectory", "working_directory", "workdir", "cwd", "directory"], schema.properties, normalizedProperties);
+  if (workdirKey && shouldIncludeOptionalPath(workdir)) output[workdirKey] = workdir;
+  const timeout = firstArg(args, ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"]);
+  const timeoutKey = firstMatchingProperty(["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], schema.properties, normalizedProperties);
+  if (timeoutKey && timeout !== undefined) output[timeoutKey] = timeout;
+  const descriptionKey = firstMatchingProperty(["description"], schema.properties, normalizedProperties);
+  if (descriptionKey) output[descriptionKey] = shellDescription(command);
+  return sanitizeNormalizedToolArguments(applyRequiredToolDefaults(output, schema.required, tool, args), tool, args);
+}
+
+function shellFallbackCommand(args: Record<string, unknown>, emittedName: string): string | undefined {
+  switch (canonicalToolName(emittedName)) {
+    case "write": {
+      const filePath = firstStringArg(args, ...pathCandidates());
+      const content = firstStringArgAllowEmpty(args, "fileText", "file_text", "content", "contents", "text", "fileContent", "file_content");
+      if (!filePath || content === undefined) return undefined;
+      const delimiter = heredocDelimiter(content);
+      return `mkdir -p "$(dirname ${shellQuote(filePath)})" && cat > ${shellQuote(filePath)} <<'${delimiter}'\n${content}\n${delimiter}`;
+    }
+    case "read": {
+      const filePath = firstStringArg(args, ...pathCandidates());
+      if (!filePath) return undefined;
+      return `cat ${shellQuote(filePath)}`;
+    }
+    case "delete": {
+      const filePath = firstStringArg(args, ...pathCandidates());
+      if (!filePath) return undefined;
+      return `rm -rf ${shellQuote(filePath)}`;
+    }
+    case "grep": {
+      const pattern = firstStringArg(args, "pattern", "query", "regex", "search");
+      if (!pattern) return undefined;
+      const targetPath = firstStringArg(args, ...pathCandidates(), "directory") || ".";
+      const include = firstStringArg(args, "glob", "include", "includeGlob", "include_glob");
+      return ["rg", "--line-number", "--color", "never", "--hidden", include ? `--glob ${shellQuote(include)}` : "", shellQuote(pattern), shellQuote(targetPath)]
+        .filter(Boolean)
+        .join(" ");
+    }
+    case "glob": {
+      const { pattern, path } = normalizedGlobArguments(args);
+      return `python3 - <<'PY'\nfrom pathlib import Path\nbase = Path(${JSON.stringify(path || ".")})\npattern = ${JSON.stringify(pattern || "**/*")}\nfor item in sorted(base.glob(pattern)):\n    print(item)\nPY`;
+    }
+    case "ls": {
+      return `ls -la ${shellQuote(firstStringArg(args, ...pathCandidates(), "directory", "dir") || ".")}`;
+    }
+    case "semsearch": {
+      const query = firstStringArg(args, "query", "pattern", "search");
+      if (!query) return undefined;
+      const directories = firstStringArrayArg(args, "targetDirectories", "target_directories", "directories", "paths");
+      return ["rg", "--line-number", "--color", "never", "--hidden", shellQuote(query), ...(directories.length ? directories : ["."]).map(shellQuote)].join(" ");
+    }
+    default:
+      return undefined;
+  }
+}
+
+function pathCandidates(): string[] {
+  return ["path", "file_path", "filePath", "filename", "file"];
+}
+
+function firstArg(args: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    if (args[key] !== undefined) return args[key];
+  }
+  const normalizedKeys = new Set(keys.map(normalizeToolName));
+  for (const [key, value] of Object.entries(args)) {
+    if (normalizedKeys.has(normalizeToolName(key))) return value;
+  }
+  return undefined;
+}
+
+function firstStringArgAllowEmpty(args: Record<string, unknown>, ...keys: string[]): string | undefined {
+  const value = firstArg(args, keys);
+  return typeof value === "string" ? value : undefined;
+}
+
+function firstStringArrayArg(args: Record<string, unknown>, ...keys: string[]): string[] {
+  const value = firstArg(args, keys);
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return typeof value === "string" && value.trim() ? [value] : [];
+}
+
+function shouldIncludeOptionalPath(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "string") return true;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return trimmed.toLowerCase() !== "undefined" && trimmed.toLowerCase() !== "null";
+}
+
+function normalizedGlobArguments(args: Record<string, unknown>): { pattern?: string; path?: string } {
+  let pattern = firstStringArg(args, "globPattern", "glob_pattern", "pattern", "glob");
+  let targetPath = firstStringArg(args, "targetDirectory", "target_directory", "directory", "cwd", "path");
+  if (targetPath && looksLikeGlobPattern(targetPath) && !looksLikeGlobPattern(pattern || "")) {
+    const nextPattern = targetPath;
+    targetPath = pattern;
+    pattern = nextPattern;
+  }
+  return { pattern, path: targetPath };
+}
+
+function looksLikeGlobPattern(value: string): boolean {
+  return /[*?[\]{}]/.test(value.trim());
+}
+
+function heredocDelimiter(content: string): string {
+  for (let index = 0; index <= 100; index += 1) {
+    const delimiter = `API_FOR_CURSOR_EOF${index === 0 ? "" : `_${index}`}`;
+    if (!content.includes(delimiter)) return delimiter;
+  }
+  return `API_FOR_CURSOR_EOF_${hashString(content)}`;
+}
+
+function listAsGlobArguments(args: Record<string, unknown>, tool: OpenAiToolSpec | undefined): Record<string, unknown> {
+  const schema = toolParameterSchema(tool);
+  const normalizedProperties = new Map(schema.properties.map((property) => [normalizeToolName(property), property]));
+  const output: Record<string, unknown> = {};
+  const patternKey = firstMatchingProperty(["pattern", "globPattern", "glob_pattern", "glob"], schema.properties, normalizedProperties);
+  if (patternKey) output[patternKey] = Object.keys(args).length ? "*" : "**/*";
+  const path = firstArg(args, [...pathCandidates(), "directory", "dir"]);
+  const pathKey = firstMatchingProperty(["path", "targetDirectory", "target_directory", "directory", "cwd"], schema.properties, normalizedProperties);
+  if (pathKey && shouldIncludeOptionalPath(path)) output[pathKey] = path;
+  return Object.keys(output).length ? output : args;
 }
 
 function resolveSpecificMCPTool(args: Record<string, unknown>, tools: OpenAiToolSpec[]): OpenAiToolSpec | undefined {
@@ -1508,10 +1727,10 @@ function commonArgumentAliases(normalized: string): Array<{ candidates: string[]
   const aliases: Record<string, Array<{ candidates: string[]; priority: number }>> = {
     absolutepath: [{ candidates: ["filePath", "path", "file", "filename"], priority: 80 }],
     commandline: [{ candidates: ["command", "cmd", "script"], priority: 80 }],
-    contents: [{ candidates: ["content", "newString", "text"], priority: 70 }],
+    contents: [{ candidates: ["content", "contents", "newString", "text", "fileText", "file_text"], priority: 70 }],
     cwd: [{ candidates: ["cwd", "directory", "path", "pattern"], priority: 45 }],
     directory: [{ candidates: ["directory", "cwd", "path", "pattern"], priority: 45 }],
-    filetext: [{ candidates: ["content", "text", "newString"], priority: 95 }],
+    filetext: [{ candidates: ["content", "contents", "text", "newString", "fileText", "file_text"], priority: 95 }],
     filepath: [{ candidates: ["filePath", "path", "file", "filename"], priority: 90 }],
     filename: [{ candidates: ["filePath", "path", "file", "filename"], priority: 75 }],
     glob: [{ candidates: ["pattern", "glob", "include"], priority: 85 }],

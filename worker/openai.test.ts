@@ -224,6 +224,7 @@ describe("OpenAI compatibility adapter", () => {
     expect(prepared.prompt.text).toContain("Do not use SDK shell/write as a substitute");
     expect(prepared.prompt.text).toContain("OpenCode MCP/server tools exposed as provider_tool names should be requested with SDK mcp");
     expect(prepared.prompt.text).not.toContain("Your next tool call must be write or shell");
+    expect(prepared.requiresLocalTool).toBe(true);
   });
 
   it("marks SDK workspace mutation done after a file-writing shell command", () => {
@@ -264,6 +265,7 @@ describe("OpenAI compatibility adapter", () => {
 
     expect(prepared.prompt.text).toContain("A file-mutating tool call has already been made");
     expect(prepared.prompt.text).not.toContain("No file-mutating tool call has been made yet");
+    expect(prepared.requiresLocalTool).toBe(false);
   });
 
   it("converts Responses input arrays", () => {
@@ -464,6 +466,92 @@ describe("OpenAI compatibility adapter", () => {
       contents: "export default function App() { return null }",
       overwrite: true
     });
+  });
+
+  it("maps SDK builtins to schema-compatible prefixed server tools", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "probe_write_file",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              file_path: { type: "string" },
+              contents: { type: "string" }
+            },
+            required: ["file_path", "contents"]
+          }
+        }
+      ],
+      toolCalls: [
+        {
+          name: "write",
+          arguments: {
+            path: "src/App.tsx",
+            fileText: "export default function App() { return null }"
+          }
+        }
+      ]
+    });
+
+    expect(toolCalls[0].function.name).toBe("probe_write_file");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({
+      file_path: "src/App.tsx",
+      contents: "export default function App() { return null }"
+    });
+  });
+
+  it("maps SDK ls calls to glob tools when a client has no ls tool", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "glob",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              pattern: { type: "string" },
+              path: { type: "string" }
+            },
+            required: ["pattern"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "ls", arguments: { path: "src" } }]
+    });
+
+    expect(toolCalls[0].function.name).toBe("glob");
+    expect(JSON.parse(toolCalls[0].function.arguments)).toEqual({ pattern: "*", path: "src" });
+  });
+
+  it("emulates SDK file writes through shell when shell is the only compatible client tool", () => {
+    const toolCalls = toOpenAiToolCalls({
+      responseId: "chatcmpl_test",
+      tools: [
+        {
+          name: "bash",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              command: { type: "string" },
+              description: { type: "string" }
+            },
+            required: ["command", "description"]
+          }
+        }
+      ],
+      toolCalls: [{ name: "write", arguments: { path: "src/App.tsx", fileText: "hello\nworld" } }]
+    });
+
+    expect(toolCalls[0].function.name).toBe("bash");
+    const args = JSON.parse(toolCalls[0].function.arguments);
+    expect(args.command).toContain("cat > 'src/App.tsx'");
+    expect(args.command).toContain("hello\nworld");
+    expect(args.description).toContain("mkdir -p");
   });
 
   it("maps Cursor SDK MCP calls to generic wrapper functions", () => {

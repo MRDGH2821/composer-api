@@ -82,7 +82,13 @@ export async function createCursorSdkCompletion(
   env: Env,
   deps: Deps,
   apiKey: string,
-  input: { prompt: { text: string; images?: CursorImage[] }; model?: { id: string }; sessionKey?: string; sessionOwnerKey?: string }
+  input: {
+    prompt: { text: string; images?: CursorImage[] };
+    model?: { id: string };
+    sessionKey?: string;
+    sessionOwnerKey?: string;
+    requiresLocalTool?: boolean;
+  }
 ): Promise<CursorSdkCompletion> {
   const accessToken = await exchangeCursorApiKey(env, deps, apiKey);
   const now = deps.now();
@@ -99,11 +105,12 @@ export async function createCursorSdkCompletion(
   return {
     agentId,
     runId,
-    stream: streamCursorLocalSdkRun(env, deps, accessToken, {
+    stream: streamCursorLocalSdkRunWithRetry(env, deps, accessToken, {
       agentId,
       runId,
       prompt: sdkPrompt(input.prompt),
-      modelId: input.model?.id || "composer-2.5"
+      modelId: input.model?.id || "composer-2.5",
+      requiresLocalTool: input.requiresLocalTool === true
     })
   };
 }
@@ -130,7 +137,8 @@ export const cursorSdkTestExports = {
   decodeLocalAgentServerFrame,
   encodeAgentClientRunRequest,
   isEmittableSdkToolCall,
-  normalizeSdkToolCallForOpenCode
+  normalizeSdkToolCallForOpenCode,
+  retryPromptAfterMissingTool
 };
 
 async function* streamCursorLocalSdkRun(
@@ -209,6 +217,46 @@ async function* streamCursorLocalSdkRun(
   }
 
   yield { type: "done", finalText: text, toolCalls };
+}
+
+async function* streamCursorLocalSdkRunWithRetry(
+  env: Env,
+  deps: Deps,
+  accessToken: string,
+  input: { agentId: string; runId: string; prompt: string; modelId: string; requiresLocalTool: boolean }
+): AsyncGenerator<CursorTextEvent> {
+  if (!input.requiresLocalTool) {
+    yield* streamCursorLocalSdkRun(env, deps, accessToken, input);
+    return;
+  }
+
+  const firstEvents: CursorTextEvent[] = [];
+  let sawToolCall = false;
+  for await (const event of streamCursorLocalSdkRun(env, deps, accessToken, input)) {
+    firstEvents.push(event);
+    if (event.type === "tool_call") sawToolCall = true;
+  }
+  if (sawToolCall) {
+    for (const event of firstEvents) yield event;
+    return;
+  }
+
+  yield* streamCursorLocalSdkRun(env, deps, accessToken, {
+    ...input,
+    runId: newLocalSdkRunId(deps.randomUUID()),
+    prompt: retryPromptAfterMissingTool(input.prompt)
+  });
+}
+
+function retryPromptAfterMissingTool(prompt: string): string {
+  return [
+    prompt,
+    "",
+    "TOOL CALL RETRY:",
+    "Your previous SDK response did not emit a local tool call, but the latest user request requires local OpenCode execution.",
+    "Do not answer in prose. Emit exactly one SDK tool call now using the allowed OpenCode tool inventory above, then wait for the local tool result.",
+    "If a specific client tool was named in the request, use that exact tool mapping and do not substitute shell, glob, or prose."
+  ].join("\n");
 }
 
 async function cursorLocalSdkRaw(

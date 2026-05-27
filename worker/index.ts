@@ -323,7 +323,8 @@ async function handleOpenCodeSdkChatRoute(
       prompt: prepared.prompt,
       model: prepared.cursorModel,
       sessionKey: sessionAffinity(request),
-      sessionOwnerKey: sdkSessionOwner(auth)
+      sessionOwnerKey: sdkSessionOwner(auth),
+      requiresLocalTool: prepared.requiresLocalTool
     });
 
     if (prepared.stream) {

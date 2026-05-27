@@ -62,6 +62,15 @@ describe("Cursor SDK harness", () => {
       }
     });
   });
+
+  it("builds a hard retry prompt when a tool-required SDK turn returns prose", () => {
+    const prompt = cursorSdkTestExports.retryPromptAfterMissingTool("Original prompt");
+
+    expect(prompt).toContain("Original prompt");
+    expect(prompt).toContain("TOOL CALL RETRY");
+    expect(prompt).toContain("Do not answer in prose");
+    expect(prompt).toContain("Emit exactly one SDK tool call");
+  });
 });
 
 function protoMessage(parts: Uint8Array[]): Uint8Array {
