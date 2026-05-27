@@ -1275,7 +1275,24 @@ public enum OpenAICompatibility {
             return aliased
         }
 
-        return tools.first { schemaLooksCompatible(sdkToolName: name, tool: $0) }
+        if canonicalToolName(name) == "ls",
+           let glob = tools.first(where: { schemaLooksCompatible(sdkToolName: "glob", tool: $0) }) {
+            return glob
+        }
+
+        if let compatible = tools
+            .map({ (tool: $0, score: schemaCompatibilityScore(sdkToolName: name, tool: $0)) })
+            .filter({ $0.score > 0 })
+            .max(by: { $0.score < $1.score })?.tool {
+            return compatible
+        }
+
+        if canEmulateWithShell(sdkToolName: name),
+           let shell = tools.first(where: { schemaLooksCompatible(sdkToolName: "shell", tool: $0) }) {
+            return shell
+        }
+
+        return nil
     }
 
     private static func normalizeArguments(
@@ -1285,6 +1302,7 @@ public enum OpenAICompatibility {
     ) -> [String: JSONValue] {
         let properties = parameterPropertyNames(tool)
         let selectedTool = normalizedName(tool.name)
+        let selectedCanonical = canonicalToolName(tool.name)
         let canonical = canonicalToolName(sdkToolName)
 
         if selectedTool == "strreplaceeditor", canonical == "write" {
@@ -1295,6 +1313,15 @@ public enum OpenAICompatibility {
 
         var output: [String: JSONValue] = [:]
         var consumed = Set<String>()
+        let required = requiredParameterNames(tool)
+
+        if canonical != "shell", selectedCanonical == "shell" {
+            return shellFallbackArguments(arguments, sdkToolName: sdkToolName, tool: tool)
+        }
+
+        if canonical == "ls", selectedCanonical == "glob" {
+            return listAsGlobArguments(arguments, tool: tool)
+        }
 
         func copy(_ source: String, as candidates: [String]) {
             guard let value = arguments[source] else { return }
@@ -1317,6 +1344,7 @@ public enum OpenAICompatibility {
                 let command = commandKey.flatMap { output[$0]?.stringValue } ?? "shell command"
                 output[descriptionKey] = .string(shellToolDescription(for: command))
             }
+            fillRequiredShellArguments(&output, source: arguments, properties: properties, required: required)
         case "write":
             copy("path", as: pathPropertyAliases())
             copy("fileText", as: ["file_text", "content", "contents", "text", "fileContent", "file_content"])
@@ -1392,6 +1420,144 @@ public enum OpenAICompatibility {
         }
 
         return output.isEmpty ? arguments : output
+    }
+
+    private static func shellFallbackArguments(
+        _ arguments: [String: JSONValue],
+        sdkToolName: String,
+        tool: OpenAIToolSpec
+    ) -> [String: JSONValue] {
+        let properties = parameterPropertyNames(tool)
+        guard !properties.isEmpty,
+              let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties),
+              let command = shellFallbackCommand(arguments, sdkToolName: sdkToolName) else {
+            return arguments
+        }
+
+        var output: [String: JSONValue] = [commandKey: .string(command)]
+        if let workdir = firstArgument(in: arguments, keys: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"])?.value,
+           let workdirKey = propertyName(matching: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"], in: properties),
+           shouldIncludeOptionalPath(workdir) {
+            output[workdirKey] = workdir
+        }
+        if let timeout = firstArgument(in: arguments, keys: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"])?.value,
+           let timeoutKey = propertyName(matching: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], in: properties) {
+            output[timeoutKey] = timeout
+        }
+        if let descriptionKey = propertyName(matching: ["description"], in: properties) {
+            output[descriptionKey] = .string(shellToolDescription(for: command))
+        }
+        fillRequiredShellArguments(&output, source: arguments, properties: properties, required: requiredParameterNames(tool))
+        return output
+    }
+
+    private static func shellFallbackCommand(_ arguments: [String: JSONValue], sdkToolName: String) -> String? {
+        switch canonicalToolName(sdkToolName) {
+        case "write":
+            guard let path = firstArgument(in: arguments, keys: pathPropertyAliases())?.value.stringValue,
+                  let content = firstArgument(in: arguments, keys: ["fileText", "file_text", "content", "contents", "text", "fileContent", "file_content"])?.value.stringValue else {
+                return nil
+            }
+            let delimiter = heredocDelimiter(for: content)
+            return "mkdir -p \"$(dirname \(shellSingleQuoted(path)))\" && cat > \(shellSingleQuoted(path)) <<'\(delimiter)'\n\(content)\n\(delimiter)"
+        case "read":
+            guard let path = firstArgument(in: arguments, keys: pathPropertyAliases())?.value.stringValue else {
+                return nil
+            }
+            let quotedPath = shellSingleQuoted(path)
+            let offset = firstArgument(in: arguments, keys: ["offset", "start", "startLine", "start_line"])?.value.integerValue
+            let limit = firstArgument(in: arguments, keys: ["limit", "maxLines", "max_lines", "lineCount", "line_count"])?.value.integerValue
+            if let offset, let limit, limit > 0 {
+                let start = max(1, offset)
+                let end = start + limit - 1
+                return "sed -n \(shellSingleQuoted("\(start),\(end)p")) \(quotedPath)"
+            }
+            return "cat \(quotedPath)"
+        case "delete":
+            guard let path = firstArgument(in: arguments, keys: pathPropertyAliases())?.value.stringValue else {
+                return nil
+            }
+            return "rm -rf \(shellSingleQuoted(path))"
+        case "grep":
+            guard let pattern = firstArgument(in: arguments, keys: ["pattern", "query", "regex", "search"])?.value.stringValue else {
+                return nil
+            }
+            let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory"])?.value.stringValue ?? "."
+            var parts = ["rg", "--line-number", "--color", "never", "--hidden"]
+            if let include = firstArgument(in: arguments, keys: ["glob", "include", "includeGlob", "include_glob"])?.value.stringValue,
+               !include.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parts.append("--glob")
+                parts.append(shellSingleQuoted(include))
+            }
+            parts.append(shellSingleQuoted(pattern))
+            parts.append(shellSingleQuoted(path))
+            return parts.joined(separator: " ")
+        case "glob":
+            let glob = normalizedGlobArguments(arguments)
+            let pattern = glob.pattern?.stringValue ?? "**/*"
+            let path = glob.searchPath?.stringValue ?? "."
+            return """
+            python3 - <<'PY'
+            from pathlib import Path
+            base = Path(\(pythonStringLiteral(path)))
+            pattern = \(pythonStringLiteral(pattern))
+            for item in sorted(base.glob(pattern)):
+                print(item)
+            PY
+            """
+        case "ls":
+            let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"])?.value.stringValue ?? "."
+            return "ls -la \(shellSingleQuoted(path))"
+        case "semsearch":
+            guard let query = firstArgument(in: arguments, keys: ["query", "pattern", "search"])?.value.stringValue else {
+                return nil
+            }
+            let directories = firstArgument(in: arguments, keys: ["targetDirectories", "target_directories", "directories", "paths"])?.value.stringArrayValue ?? ["."]
+            return (["rg", "--line-number", "--color", "never", "--hidden", shellSingleQuoted(query)] + directories.map(shellSingleQuoted)).joined(separator: " ")
+        default:
+            return nil
+        }
+    }
+
+    private static func listAsGlobArguments(_ arguments: [String: JSONValue], tool: OpenAIToolSpec) -> [String: JSONValue] {
+        let properties = parameterPropertyNames(tool)
+        guard !properties.isEmpty else { return arguments }
+        var output: [String: JSONValue] = [:]
+        if let patternKey = propertyName(matching: ["pattern", "globPattern", "glob_pattern", "glob"], in: properties) {
+            output[patternKey] = .string(arguments.isEmpty ? "**/*" : "*")
+        }
+        if let path = firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"])?.value,
+           shouldIncludeOptionalPath(path),
+           let pathKey = propertyName(matching: ["path", "targetDirectory", "target_directory", "directory", "cwd"], in: properties) {
+            output[pathKey] = path
+        }
+        return output.isEmpty ? arguments : output
+    }
+
+    private static func fillRequiredShellArguments(
+        _ output: inout [String: JSONValue],
+        source: [String: JSONValue],
+        properties: [String],
+        required: Set<String>
+    ) {
+        guard !required.isEmpty else { return }
+        if let workdirKey = propertyName(matching: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"], in: properties),
+           isRequired(workdirKey, in: required),
+           output[workdirKey] == nil {
+            output[workdirKey] = firstArgument(in: source, keys: ["workingDirectory", "working_directory", "workdir", "cwd", "directory"])?.value ?? .string(".")
+        }
+        if let timeoutKey = propertyName(matching: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"], in: properties),
+           isRequired(timeoutKey, in: required),
+           output[timeoutKey] == nil {
+            output[timeoutKey] = firstArgument(in: source, keys: ["timeout", "timeoutMs", "timeout_ms", "timeoutSeconds", "timeout_seconds"])?.value ?? .number(120_000)
+        }
+        if let descriptionKey = propertyName(matching: ["description"], in: properties),
+           isRequired(descriptionKey, in: required),
+           output[descriptionKey] == nil {
+            let commandKey = propertyName(matching: ["command", "cmd", "script", "input"], in: properties)
+            let command = commandKey.flatMap { output[$0]?.stringValue } ?? "shell command"
+            output[descriptionKey] = .string(shellToolDescription(for: command))
+        }
     }
 
     private struct NamedArgument {
@@ -1561,6 +1727,22 @@ public enum OpenAICompatibility {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
+    private static func heredocDelimiter(for content: String) -> String {
+        for index in 0...100 {
+            let suffix = index == 0 ? "" : "_\(index)"
+            let delimiter = "API_FOR_CURSOR_EOF\(suffix)"
+            if !content.contains(delimiter) {
+                return delimiter
+            }
+        }
+        return "API_FOR_CURSOR_EOF_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+    }
+
+    private static func pythonStringLiteral(_ value: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes])) ?? Data(#""""#.utf8)
+        return String(data: data, encoding: .utf8) ?? #""""#
+    }
+
     private static func strReplaceEditorArguments(_ arguments: [String: JSONValue], properties: [String]) -> [String: JSONValue] {
         let fallbackProperties = properties.isEmpty ? ["command", "path", "file_text"] : properties
         var output: [String: JSONValue] = [:]
@@ -1610,12 +1792,44 @@ public enum OpenAICompatibility {
         }
     }
 
+    private static func schemaCompatibilityScore(sdkToolName: String, tool: OpenAIToolSpec) -> Int {
+        guard schemaLooksCompatible(sdkToolName: sdkToolName, tool: tool) else { return 0 }
+        let sdkCanonical = canonicalToolName(sdkToolName)
+        let toolCanonical = canonicalToolName(tool.name)
+        if toolCanonical == sdkCanonical { return 100 }
+        if toolAliases(for: sdkToolName).map(normalizedName).contains(normalizedName(tool.name)) { return 95 }
+        if sdkCanonical == "write", normalizedName(tool.name).contains("edit") { return 80 }
+        if sdkCanonical == "ls", toolCanonical == "read" { return 20 }
+        return 50
+    }
+
+    private static func canEmulateWithShell(sdkToolName: String) -> Bool {
+        switch canonicalToolName(sdkToolName) {
+        case "write", "read", "delete", "grep", "glob", "ls", "semsearch":
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func parameterPropertyNames(_ tool: OpenAIToolSpec) -> [String] {
         guard case .object(let root)? = tool.parameters,
               case .object(let properties)? = root["properties"] else {
             return []
         }
         return Array(properties.keys)
+    }
+
+    private static func requiredParameterNames(_ tool: OpenAIToolSpec) -> Set<String> {
+        guard case .object(let root)? = tool.parameters,
+              case .array(let required)? = root["required"] else {
+            return []
+        }
+        return Set(required.compactMap(\.stringValue).map(normalizedName))
+    }
+
+    private static func isRequired(_ property: String, in required: Set<String>) -> Bool {
+        required.contains(normalizedName(property))
     }
 
     private static func propertyName(matching candidates: [String], in properties: [String]) -> String? {
@@ -1747,6 +1961,31 @@ public enum OpenAICompatibility {
 private extension String {
     var nonEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+private extension JSONValue {
+    var integerValue: Int? {
+        switch self {
+        case .number(let value):
+            return Int(value)
+        case .string(let value):
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    var stringArrayValue: [String]? {
+        switch self {
+        case .array(let values):
+            let strings = values.compactMap(\.stringValue)
+            return strings.isEmpty ? nil : strings
+        case .string(let value):
+            return [value]
+        default:
+            return nil
+        }
     }
 }
 

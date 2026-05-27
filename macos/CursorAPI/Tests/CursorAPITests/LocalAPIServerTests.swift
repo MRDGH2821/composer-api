@@ -2033,6 +2033,164 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["path"])
     }
 
+    func testChatToolCallsPreferGlobForSDKListWhenClientHasGlobTool() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"list source files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"read",
+                "parameters":{
+                  "type":"object",
+                  "properties":{"filePath":{"type":"string"}},
+                  "required":["filePath"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"glob",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "pattern":{"type":"string"},
+                    "path":{"type":"string"}
+                  },
+                  "required":["pattern"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "ls", arguments: [
+            "path": .string("src")
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "glob")
+        XCTAssertEqual(arguments["pattern"] as? String, "*")
+        XCTAssertEqual(arguments["path"] as? String, "src")
+        XCTAssertNil(arguments["filePath"])
+    }
+
+    func testChatToolCallsEmulateSDKWriteThroughShellWhenNoWriteToolExists() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"create a file"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"bash",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "command":{"type":"string"},
+                    "description":{"type":"string"},
+                    "cwd":{"type":"string"},
+                    "timeout_ms":{"type":"number"}
+                  },
+                  "required":["command","description","cwd","timeout_ms"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "write", arguments: [
+            "path": .string("src/App.tsx"),
+            "fileText": .string("export default function App() { return null }")
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+        let command = try XCTUnwrap(arguments["command"] as? String)
+
+        XCTAssertEqual(function["name"] as? String, "bash")
+        XCTAssertTrue(command.contains("mkdir -p \"$(dirname 'src/App.tsx')\""))
+        XCTAssertTrue(command.contains("cat > 'src/App.tsx' <<'API_FOR_CURSOR_EOF'"))
+        XCTAssertTrue(command.contains("export default function App() { return null }"))
+        XCTAssertEqual(arguments["description"] as? String, "Create requested file")
+        XCTAssertEqual(arguments["cwd"] as? String, ".")
+        XCTAssertEqual((arguments["timeout_ms"] as? NSNumber)?.doubleValue, 120_000)
+    }
+
+    func testChatToolCallsEmulateSDKGrepThroughShellWhenNoSearchToolExists() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"search files"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"run_command",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "command":{"type":"string"},
+                    "description":{"type":"string"}
+                  },
+                  "required":["command"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "grep", arguments: [
+            "pattern": .string("TODO"),
+            "path": .string("src"),
+            "glob": .string("*.swift")
+        ])
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "run_command")
+        XCTAssertEqual(arguments["command"] as? String, "rg --line-number --color never --hidden --glob '*.swift' 'TODO' 'src'")
+        XCTAssertEqual(arguments["description"] as? String, "Run rg --line-number --color never --hidden --glob '*.swift' 'TODO' 'src'")
+        XCTAssertNil(arguments["pattern"])
+    }
+
     func testResponsesFunctionCallsMapSDKWriteToClientFileSchema() throws {
         let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
         {
@@ -2074,6 +2232,52 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments["content"] as? String, "<h1>Hello</h1>")
         XCTAssertNil(arguments["path"])
         XCTAssertNil(arguments["fileText"])
+    }
+
+    func testResponsesFunctionCallsEmulateSDKGlobThroughShellWhenNoGlobToolExists() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"find source files",
+          "tools":[
+            {
+              "type":"function",
+              "name":"run_command",
+              "parameters":{
+                "type":"object",
+                "properties":{
+                  "command":{"type":"string"},
+                  "description":{"type":"string"}
+                },
+                "required":["command"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "glob", arguments: [
+            "targetDirectory": .string("src"),
+            "globPattern": .string("**/*.tsx")
+        ])
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_test",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let output = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(output.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+        let command = try XCTUnwrap(arguments["command"] as? String)
+
+        XCTAssertEqual(functionCall["name"] as? String, "run_command")
+        XCTAssertTrue(command.contains("python3 - <<'PY'"))
+        XCTAssertTrue(command.contains(#"base = Path("src")"#))
+        XCTAssertTrue(command.contains(#"pattern = "**/*.tsx""#))
+        XCTAssertNil(arguments["targetDirectory"])
+        XCTAssertNil(arguments["globPattern"])
     }
 
     func testFunctionCallsMapSDKUpdateTodosToClientTodoWriteSchema() throws {
