@@ -47,6 +47,7 @@ interface StoredResponseState {
   response?: Record<string, unknown>;
   inputItems: unknown[];
   outputItems: unknown[];
+  sdkSessionKey?: string;
   updatedAt: number;
 }
 
@@ -212,6 +213,8 @@ async function handleOpenAiRoute(
     return handleResponseStateRoute(request, auth, route);
   }
 
+  if (route.kind !== "chat" && route.kind !== "responses") return notFound();
+
   if (request.method !== "POST") return notFound();
   const auth = await authenticate(request, env, route);
   if (!auth) return unauthorized();
@@ -236,6 +239,11 @@ async function handleOpenAiRoute(
         });
   const id = `${route.kind === "chat" ? "chatcmpl" : "resp"}_${crypto.randomUUID().replaceAll("-", "")}`;
   const created = Math.floor(deps.now().getTime() / 1000);
+  const sdkSessionKey = route.kind === "responses"
+    ? previousState?.sdkSessionKey || sessionAffinity(request) || id
+    : sessionAffinity(request);
+  const completionRoute: CompletionRoute =
+    route.kind === "chat" ? { ...route, kind: "chat" } : { ...route, kind: "responses" };
 
   // Direct bearer mode never touches D1; no request logs are created.
   const logId =
@@ -252,6 +260,23 @@ async function handleOpenAiRoute(
     logId ? completeRequestLog(env, logId, input) : Promise.resolve();
 
   try {
+    if (shouldUseSdkForPreparedRoute(env, completionRoute)) {
+      return await handleSdkPreparedOpenAiRoute({
+        route: completionRoute,
+        prepared,
+        request,
+        env,
+        ctx,
+        deps,
+        auth,
+        id,
+        created,
+        responseOwner,
+        sdkSessionKey,
+        finishLog
+      });
+    }
+
     const completion = await createCursorCompletion(env, deps, auth.cursorApiKey, {
       prompt: prepared.prompt,
       model: prepared.cursorModel,
@@ -285,6 +310,7 @@ async function handleOpenAiRoute(
               inputItems: prepared.responseInputItems ?? [],
               outputItems: (completed.output as unknown[]) ?? [],
               store: prepared.storeResponse !== false,
+              sdkSessionKey,
               now: deps.now().getTime()
             });
           }
@@ -342,6 +368,7 @@ async function handleOpenAiRoute(
         inputItems: prepared.responseInputItems ?? [],
         outputItems: (response.output as unknown[]) ?? [],
         store: prepared.storeResponse !== false,
+        sdkSessionKey,
         now: deps.now().getTime()
       });
     }
@@ -353,6 +380,151 @@ async function handleOpenAiRoute(
     }).catch(() => undefined);
     throw error;
   }
+}
+
+async function handleSdkPreparedOpenAiRoute(input: {
+  route: CompletionRoute;
+  prepared: ReturnType<typeof prepareChatRequest> | ReturnType<typeof prepareResponsesRequest>;
+  request: Request;
+  env: Env;
+  ctx: ExecutionContext;
+  deps: Deps;
+  auth: AuthResult;
+  id: string;
+  created: number;
+  responseOwner?: string;
+  sdkSessionKey?: string;
+  finishLog: (input: Parameters<typeof completeRequestLog>[2]) => Promise<void>;
+}): Promise<Response> {
+  const completion = await createCursorSdkCompletion(input.env, input.deps, input.auth.cursorApiKey, {
+    prompt: input.prepared.prompt,
+    model: input.prepared.cursorModel,
+    sessionKey: input.sdkSessionKey || sessionAffinity(input.request),
+    sessionOwnerKey: sdkSessionOwner(input.auth),
+    workingDirectory: input.prepared.toolContext?.workingDirectory,
+    clientTools: input.prepared.tools,
+    requiresLocalTool: input.prepared.requiresLocalTool,
+    allowToolCall: (toolCall) => {
+      if (!input.prepared.tools.length) return "No client tool inventory was available for this request.";
+      const toolCalls = toOpenAiToolCalls({
+        toolCalls: [toolCall],
+        tools: input.prepared.tools,
+        responseId: "probe",
+        context: input.prepared.toolContext
+      });
+      return toolCalls.length > 0
+        || toolCallRetryHint({ toolCall, tools: input.prepared.tools, context: input.prepared.toolContext });
+    }
+  });
+
+  if (input.prepared.stream) {
+    return streamOpenAiEvents(input.route.kind, completion.stream, {
+      id: input.id,
+      created: input.created,
+      model: input.prepared.model,
+      promptChars: input.prepared.promptChars,
+      includeUsage: input.prepared.includeUsage,
+      metadata: input.prepared.responseMetadata,
+      tools: input.prepared.tools,
+      context: input.prepared.toolContext,
+      onDone: async (text, completionChars, toolCalls) => {
+        if (input.route.kind === "responses" && input.responseOwner) {
+          const completed = responseObject({
+            id: input.id,
+            created: input.created,
+            model: input.prepared.model,
+            text,
+            toolCalls,
+            promptChars: input.prepared.promptChars,
+            metadata: input.prepared.responseMetadata
+          });
+          storeResponseState(input.responseOwner, {
+            id: input.id,
+            response: completed,
+            inputItems: input.prepared.responseInputItems ?? [],
+            outputItems: (completed.output as unknown[]) ?? [],
+            store: input.prepared.storeResponse !== false,
+            sdkSessionKey: input.sdkSessionKey,
+            now: input.deps.now().getTime()
+          });
+        }
+        return input.finishLog({
+          status: "completed",
+          completionChars,
+          cursorAgentId: completion.agentId,
+          cursorRunId: completion.runId
+        });
+      },
+      onError: (error) =>
+        input.finishLog({
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          cursorAgentId: completion.agentId,
+          cursorRunId: completion.runId
+        })
+    }, input.ctx);
+  }
+
+  const output = await collectCursorSdkOutput(completion.stream);
+  const toolCalls = toOpenAiToolCalls({
+    toolCalls: output.toolCalls,
+    tools: input.prepared.tools,
+    responseId: input.id,
+    context: input.prepared.toolContext
+  });
+  const completionChars = completionCharsFromOutput(output.text, toolCalls);
+  await input.finishLog({
+    status: "completed",
+    completionChars,
+    cursorAgentId: completion.agentId,
+    cursorRunId: completion.runId
+  });
+
+  if (input.route.kind === "chat") {
+    return json(
+      chatCompletionResponse({
+        id: input.id,
+        created: input.created,
+        model: input.prepared.model,
+        text: output.text,
+        toolCalls,
+        promptChars: input.prepared.promptChars,
+        metadata: input.prepared.responseMetadata
+      })
+    );
+  }
+
+  const response = responseObject({
+    id: input.id,
+    created: input.created,
+    model: input.prepared.model,
+    text: output.text,
+    toolCalls,
+    promptChars: input.prepared.promptChars,
+    metadata: input.prepared.responseMetadata
+  });
+  if (input.responseOwner) {
+    storeResponseState(input.responseOwner, {
+      id: input.id,
+      response,
+      inputItems: input.prepared.responseInputItems ?? [],
+      outputItems: (response.output as unknown[]) ?? [],
+      store: input.prepared.storeResponse !== false,
+      sdkSessionKey: input.sdkSessionKey,
+      now: input.deps.now().getTime()
+    });
+  }
+  return json(response);
+}
+
+function shouldUseSdkForPreparedRoute(env: Env, route: CompletionRoute): boolean {
+  if (!hasConfiguredSdkBridge(env)) return false;
+  if (route.surface === "opencode") return false;
+  return route.kind === "responses" || route.kind === "chat";
+}
+
+function hasConfiguredSdkBridge(env: Env): boolean {
+  return Boolean(env.CURSOR_SDK_BRIDGE_CONTAINER || env.CURSOR_SDK_BRIDGE_URL?.trim());
 }
 
 async function handleOpenCodeSdkChatRoute(
@@ -661,6 +833,7 @@ function storeResponseState(
     inputItems: unknown[];
     outputItems: unknown[];
     store: boolean;
+    sdkSessionKey?: string;
     now: number;
   }
 ) {
@@ -671,6 +844,7 @@ function storeResponseState(
     response: input.store ? input.response : undefined,
     inputItems: input.store ? input.inputItems : [],
     outputItems: input.outputItems,
+    sdkSessionKey: input.sdkSessionKey,
     updatedAt: input.now
   });
   pruneResponseState();
@@ -721,6 +895,8 @@ interface OpenAiRoute {
   responseId?: string;
   surface?: "standard" | "opencode" | "opencodev2";
 }
+
+type CompletionRoute = OpenAiRoute & { kind: "chat" | "responses" };
 
 function matchOpenAiRoute(pathname: string): OpenAiRoute | null {
   const opencodePath = pathname.startsWith("/opencode/v1/") ? pathname.slice("/opencode/v1".length) : "";

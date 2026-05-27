@@ -1037,6 +1037,113 @@ describe("Worker", () => {
     });
   });
 
+  it("uses the SDK bridge for standard Responses when configured", async () => {
+    const db = new FakeD1();
+    const env = { ...makeEnv(db), CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" };
+    const { deps, chatRequestBodies, sdkRequests } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_responses_sdk",
+          "x-session-affinity": "responses-sdk-session"
+        },
+        body: JSON.stringify({ model: "composer-2.5", input: "Say hello" })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      object: "response",
+      output: [{ type: "message", content: [{ type: "output_text", text: "Hello from SDK" }] }]
+    });
+    expect(chatRequestBodies).toHaveLength(0);
+    expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /sdk"]);
+    expect(sdkRequests[0].body).toMatchObject({
+      apiKey: "cursor_direct_key_responses_sdk",
+      model: "composer-2.5"
+    });
+  });
+
+  it("uses the SDK bridge for standard Chat Completions when configured", async () => {
+    const db = new FakeD1();
+    const env = { ...makeEnv(db), CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" };
+    const { deps, chatRequestBodies, sdkRequests } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_chat_sdk"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "Say hello" }]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [{ message: { content: "Hello from SDK" }, finish_reason: "stop" }]
+    });
+    expect(chatRequestBodies).toHaveLength(0);
+    expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /sdk"]);
+    expect(sdkRequests[0].body).toMatchObject({
+      apiKey: "cursor_direct_key_chat_sdk",
+      model: "composer-2.5"
+    });
+  });
+
+  it("reuses the SDK session for standard Responses continuations", async () => {
+    const db = new FakeD1();
+    const env = { ...makeEnv(db), CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" };
+    const { deps, sdkRequests } = fakeDeps();
+
+    const first = await handleRequest(
+      new Request("https://composer.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_response_session"
+        },
+        body: JSON.stringify({ model: "composer-2.5", input: "Say hello" })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+    const firstBody = (await first.json()) as { id: string };
+
+    const second = await handleRequest(
+      new Request("https://composer.test/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_response_session"
+        },
+        body: JSON.stringify({ model: "composer-2.5", previous_response_id: firstBody.id, input: "Say hello again" })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(second.status).toBe(200);
+    await second.json();
+    expect(sdkRequests).toHaveLength(2);
+    expect((sdkRequests[1].body as { sessionKey?: string }).sessionKey).toBe((sdkRequests[0].body as { sessionKey?: string }).sessionKey);
+  });
+
   it("stores Responses for retrieval and input item listing", async () => {
     const db = new FakeD1();
     const env = makeEnv(db);
@@ -1275,6 +1382,51 @@ describe("Worker", () => {
       name: "glob",
       arguments: "{\"pattern\":\"**/*.ts\"}"
     });
+  });
+
+  it("uses the SDK bridge for standard Chat Completions when tools are provided", async () => {
+    const db = new FakeD1();
+    const env = { ...makeEnv(db), CURSOR_SDK_BRIDGE_URL: "https://bridge.test/sdk" };
+    const { deps, chatRequestBodies, sdkRequests } = fakeDeps();
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer cursor_direct_key_chat_sdk_tools"
+        },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "Say hello" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "glob",
+                parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+              }
+            }
+          ]
+        })
+      }),
+      env,
+      fakeCtx(),
+      deps
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      choices: [{ message: { content: "Hello from SDK" }, finish_reason: "stop" }]
+    });
+    expect(chatRequestBodies).toHaveLength(0);
+    expect(sdkRequests.map((item) => `${item.method} ${item.path}`)).toEqual(["POST /sdk"]);
+    expect((sdkRequests[0].body as { tools?: unknown[] }).tools).toEqual([
+      {
+        name: "glob",
+        parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] }
+      }
+    ]);
   });
 
   it("streams Responses function_call events when tools are provided", async () => {
