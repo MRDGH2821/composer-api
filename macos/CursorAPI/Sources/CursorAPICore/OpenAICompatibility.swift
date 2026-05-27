@@ -2544,6 +2544,19 @@ public enum OpenAICompatibility {
         return object.mapValues(JSONValue.from)
     }
 
+    private static func arrayArgumentValue(_ value: JSONValue) -> [JSONValue]? {
+        if case .array(let values) = value {
+            return values
+        }
+        guard let string = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              string.hasPrefix("["),
+              let data = string.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            return nil
+        }
+        return array.map(JSONValue.from)
+    }
+
     private static func shellFallbackArguments(
         _ arguments: [String: JSONValue],
         sdkToolName: String,
@@ -2886,6 +2899,13 @@ public enum OpenAICompatibility {
     }
 
     private static func normalizeToolArgumentValue(_ value: JSONValue, property: String, tool: OpenAIToolSpec, context: ToolCallContext?, sourceProperty: String? = nil) -> JSONValue {
+        if value == .null, toolPropertyAllowsNull(tool: tool, property: property) {
+            return value
+        }
+        if toolPropertyPrefersArray(tool: tool, property: property) {
+            let values = arrayArgumentValue(value) ?? [value]
+            return .array(values.map { normalizeArrayItemArgumentValue($0, property: property, tool: tool, context: context) })
+        }
         if case .number(let number) = value,
            toolPropertyPrefersSecondsTimeout(tool: tool, property: property) {
             return .number(normalizeTimeoutForSecondsTool(number, sourceProperty: sourceProperty))
@@ -2895,6 +2915,32 @@ public enum OpenAICompatibility {
             return value
         }
         return .string(absolutizeToolPath(string, context: context))
+    }
+
+    private static func normalizeArrayItemArgumentValue(_ value: JSONValue, property: String, tool: OpenAIToolSpec, context: ToolCallContext?) -> JSONValue {
+        guard let string = value.stringValue,
+              toolPropertyPrefersAbsolutePath(tool: tool, property: property) else {
+            return value
+        }
+        return .string(absolutizeToolPath(string, context: context))
+    }
+
+    private static func toolPropertyPrefersArray(tool: OpenAIToolSpec, property: String) -> Bool {
+        guard case .object(let schema)? = parameterPropertySchema(property, tool: tool) else {
+            return false
+        }
+        if schema["items"] != nil || schema["prefixItems"] != nil {
+            return true
+        }
+        let types = schemaJSONTypes(schema).filter { $0 != "null" }
+        return !types.isEmpty && types.allSatisfy { $0 == "array" }
+    }
+
+    private static func toolPropertyAllowsNull(tool: OpenAIToolSpec, property: String) -> Bool {
+        guard case .object(let schema)? = parameterPropertySchema(property, tool: tool) else {
+            return false
+        }
+        return schemaAllowsJSONType(schema, type: "null")
     }
 
     private static func normalizeTimeoutForSecondsTool(_ value: Double, sourceProperty: String?) -> Double {

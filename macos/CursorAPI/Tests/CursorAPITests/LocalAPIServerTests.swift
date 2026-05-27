@@ -5028,6 +5028,72 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(arguments["fileText"])
     }
 
+    func testChatToolCallsCoerceScalarSDKArgumentsToClientArraySchemas() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"inspect arrays"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"diagnostics",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "files":{"type":"array","items":{"type":"string"}}
+                  },
+                  "required":["files"]
+                }
+              }
+            },
+            {
+              "type":"function",
+              "function":{
+                "name":"semantic_search",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "query":{"type":"string"},
+                    "targetDirectories":{"type":"array","items":{"type":"string"}}
+                  },
+                  "required":["query","targetDirectories"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let output = CursorSDKOutput(text: "", toolCalls: [
+            CursorToolCall(name: "readLints", arguments: [
+                "paths": .string("src/App.tsx")
+            ]),
+            CursorToolCall(name: "semSearch", arguments: [
+                "query": .string("submit button"),
+                "targetDirectories": .string(#"["src","app"]"#)
+            ])
+        ], agentID: "agent-test", runID: "run-test")
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_test",
+            created: 1,
+            prepared: prepared,
+            output: output
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }, ["diagnostics", "semantic_search"])
+
+        let arguments = try toolCalls.map { try decodedArguments(try XCTUnwrap($0["function"] as? [String: Any])) }
+        XCTAssertEqual(arguments[0]["files"] as? [String], ["src/App.tsx"])
+        XCTAssertEqual(arguments[1]["query"] as? String, "submit button")
+        XCTAssertEqual(arguments[1]["targetDirectories"] as? [String], ["src", "app"])
+    }
+
     func testChatToolCallsFallbackToSchemaEnumWhenRequiredModeIsNotOperation() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
