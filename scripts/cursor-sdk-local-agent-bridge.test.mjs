@@ -540,6 +540,64 @@ describe("Cursor SDK local-agent bridge", () => {
     })).toBe("Unexpected argument for configure_deploy: debug");
   });
 
+  it("treats additionalProperties schemas as evaluated for unevaluated object properties", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "configure_env",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string" }
+          },
+          required: ["command"],
+          additionalProperties: { type: "string", minLength: 1 },
+          unevaluatedProperties: false
+        }
+      }
+    ]);
+
+    expect(validateClientMcpToolCall(tools, "configure_env", {
+      command: "npm run build",
+      NODE_ENV: "production"
+    })).toBe(null);
+    expect(validateClientMcpToolCall(tools, "configure_env", {
+      command: "npm run build",
+      NODE_ENV: ""
+    })).toBe("Invalid value for configure_env.NODE_ENV: expected at least 1 character(s)");
+    expect(validateClientMcpToolCall(tools, "configure_env", {
+      command: "npm run build",
+      DEBUG: true
+    })).toBe("Invalid value for configure_env.DEBUG: expected string");
+  });
+
+  it("treats contains matches as evaluated for unevaluated array items", () => {
+    const tools = clientMcpToolDefinitions([
+      {
+        name: "run_pipeline",
+        parameters: {
+          type: "object",
+          properties: {
+            steps: {
+              type: "array",
+              prefixItems: [{ const: "install" }],
+              contains: { const: "build" },
+              minContains: 1,
+              unevaluatedItems: false
+            }
+          },
+          required: ["steps"]
+        }
+      }
+    ]);
+
+    expect(validateClientMcpToolCall(tools, "run_pipeline", {
+      steps: ["install", "build"]
+    })).toBe(null);
+    expect(validateClientMcpToolCall(tools, "run_pipeline", {
+      steps: ["install", "build", "test"]
+    })).toBe("Unexpected array item for run_pipeline.steps: 2");
+  });
+
   it("validates dynamic client MCP oneOf schemas exactly", () => {
     const tools = clientMcpToolDefinitions([
       {

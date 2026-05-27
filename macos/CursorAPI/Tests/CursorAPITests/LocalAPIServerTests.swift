@@ -8544,6 +8544,100 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertNil(outputItems.first { ($0["type"] as? String) == "function_call" })
     }
 
+    func testResponsesFunctionCallsEmitProviderSpecificMCPToolWhenAdditionalPropertiesEvaluateUnevaluatedSchema() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"configure env",
+          "tools":[
+            {
+              "type":"function",
+              "name":"mcp__runner__configure_env",
+              "parameters":{
+                "type":"object",
+                "properties":{
+                  "command":{"type":"string"}
+                },
+                "required":["command"],
+                "additionalProperties":{"type":"string","minLength":1},
+                "unevaluatedProperties":false
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("runner"),
+            "toolName": .string("configure_env"),
+            "args": .object([
+                "command": .string("npm run build"),
+                "NODE_ENV": .string("production")
+            ])
+        ])
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_mcp_additional_evaluated",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let outputItems = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(outputItems.first { ($0["type"] as? String) == "function_call" })
+        XCTAssertEqual(functionCall["name"] as? String, "mcp__runner__configure_env")
+        let arguments = try decodedArguments(functionCall)
+        XCTAssertEqual(arguments["command"] as? String, "npm run build")
+        XCTAssertEqual(arguments["NODE_ENV"] as? String, "production")
+    }
+
+    func testResponsesFunctionCallsEmitProviderSpecificMCPToolWhenContainsEvaluatesUnevaluatedItems() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"run pipeline",
+          "tools":[
+            {
+              "type":"function",
+              "name":"mcp__runner__run_pipeline",
+              "parameters":{
+                "type":"object",
+                "properties":{
+                  "steps":{
+                    "type":"array",
+                    "prefixItems":[{"const":"install"}],
+                    "contains":{"const":"build"},
+                    "minContains":1,
+                    "unevaluatedItems":false
+                  }
+                },
+                "required":["steps"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+        let toolCall = CursorToolCall(name: "mcp", arguments: [
+            "providerIdentifier": .string("runner"),
+            "toolName": .string("run_pipeline"),
+            "args": .object([
+                "steps": .array([.string("install"), .string("build")])
+            ])
+        ])
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_mcp_contains_evaluated",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [toolCall], agentID: "agent-test", runID: "run-test")
+        )
+
+        let outputItems = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(outputItems.first { ($0["type"] as? String) == "function_call" })
+        XCTAssertEqual(functionCall["name"] as? String, "mcp__runner__run_pipeline")
+        let arguments = try decodedArguments(functionCall)
+        XCTAssertEqual(arguments["steps"] as? [String], ["install", "build"])
+    }
+
     func testResponsesFunctionCallsDoNotEmitProviderSpecificMCPToolViolatingPatternProperties() throws {
         let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
         {

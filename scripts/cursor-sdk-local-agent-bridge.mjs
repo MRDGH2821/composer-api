@@ -504,9 +504,12 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
       const evaluatedByComposedSchema = schemaEvaluatesObjectProperty(schema, key, root, new Set(seenRefs));
       if (!validated && schema.additionalProperties === false) {
         return `Unexpected argument for ${path}: ${key}`;
+      } else if (!validated && schema.additionalProperties === true) {
+        validated = true;
       } else if (!validated && isRecord(schema.additionalProperties)) {
         const error = validateJsonSchemaValue(nestedValue, schema.additionalProperties, `${path}.${key}`, root, new Set(seenRefs));
         if (error) return error;
+        validated = true;
       }
       if (!validated && !evaluatedByComposedSchema && schema.unevaluatedProperties === false) {
         return `Unexpected argument for ${path}: ${key}`;
@@ -545,8 +548,15 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
         }
       }
     }
+    const evaluatedItems = new Set();
     if (isRecord(schema.contains) || typeof schema.contains === "boolean") {
-      const matches = value.filter((item) => validateJsonSchemaValue(item, schema.contains, path, root, new Set(seenRefs)) === null).length;
+      let matches = 0;
+      for (let index = 0; index < value.length; index += 1) {
+        if (validateJsonSchemaValue(value[index], schema.contains, path, root, new Set(seenRefs)) === null) {
+          matches += 1;
+          evaluatedItems.add(index);
+        }
+      }
       const minContains = Number.isInteger(schema.minContains) ? schema.minContains : 1;
       const maxContains = Number.isInteger(schema.maxContains) ? schema.maxContains : null;
       if (matches < minContains) {
@@ -564,31 +574,47 @@ function validateJsonSchemaValue(value, schema, path, rootSchema = schema, seenR
     for (let index = 0; index < Math.min(prefixItems.length, value.length); index += 1) {
       const error = validateJsonSchemaValue(value[index], prefixItems[index], `${path}[${index}]`, root, new Set(seenRefs));
       if (error) return error;
+      evaluatedItems.add(index);
     }
     if (schema.additionalItems === false && value.length > prefixItems.length) {
       return `Unexpected array item for ${path}: ${prefixItems.length}`;
+    }
+    if (schema.additionalItems === true) {
+      for (let index = prefixItems.length; index < value.length; index += 1) {
+        evaluatedItems.add(index);
+      }
     }
     if (isRecord(schema.additionalItems)) {
       for (let index = prefixItems.length; index < value.length; index += 1) {
         const error = validateJsonSchemaValue(value[index], schema.additionalItems, `${path}[${index}]`, root, new Set(seenRefs));
         if (error) return error;
+        evaluatedItems.add(index);
       }
     }
     if (schema.items === false && value.length > prefixItems.length) {
       return `Unexpected array item for ${path}: ${prefixItems.length}`;
     }
+    if (schema.items === true) {
+      for (let index = prefixItems.length; index < value.length; index += 1) {
+        evaluatedItems.add(index);
+      }
+    }
     if (!Array.isArray(schema.items) && isRecord(schema.items)) {
       for (let index = prefixItems.length; index < value.length; index += 1) {
         const error = validateJsonSchemaValue(value[index], schema.items, `${path}[${index}]`, root, new Set(seenRefs));
         if (error) return error;
+        evaluatedItems.add(index);
       }
     }
-    const extrasEvaluated = (!Array.isArray(schema.items) && isRecord(schema.items)) || isRecord(schema.additionalItems) || schema.additionalItems === true;
-    if (!extrasEvaluated && schema.unevaluatedItems === false && value.length > prefixItems.length) {
-      return `Unexpected array item for ${path}: ${prefixItems.length}`;
+    if (schema.unevaluatedItems === false) {
+      const unevaluatedIndex = value.findIndex((_item, index) => !evaluatedItems.has(index));
+      if (unevaluatedIndex >= 0) {
+        return `Unexpected array item for ${path}: ${unevaluatedIndex}`;
+      }
     }
-    if (!extrasEvaluated && isRecord(schema.unevaluatedItems)) {
-      for (let index = prefixItems.length; index < value.length; index += 1) {
+    if (isRecord(schema.unevaluatedItems)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (evaluatedItems.has(index)) continue;
         const error = validateJsonSchemaValue(value[index], schema.unevaluatedItems, `${path}[${index}]`, root, new Set(seenRefs));
         if (error) return error;
       }
@@ -776,6 +802,7 @@ function schemaEvaluatesObjectProperty(schema, key, rootSchema, seenRefs = new S
   if (reference) return schemaEvaluatesObjectProperty(reference.schema, key, rootSchema, reference.seenRefs);
   if (isRecord(schema.properties) && Object.prototype.hasOwnProperty.call(schema.properties, key)) return true;
   if (patternPropertySchemasForKey(schema, key).length > 0) return true;
+  if (schema.additionalProperties === true || isRecord(schema.additionalProperties)) return true;
   for (const keyword of ["allOf", "anyOf", "oneOf"]) {
     if (!Array.isArray(schema[keyword])) continue;
     if (schema[keyword].some((candidate) => schemaEvaluatesObjectProperty(candidate, key, rootSchema, new Set(seenRefs)))) {

@@ -4049,10 +4049,16 @@ public enum OpenAICompatibility {
             if !validated, schema["additionalProperties"] == .bool(false) {
                 return false
             }
+            if !validated, schema["additionalProperties"] == .bool(true) {
+                validated = true
+            }
             if !validated,
                case .object? = schema["additionalProperties"],
                !argumentValueSatisfiesSchema(nestedValue, schema: schema["additionalProperties"], required: false) {
                 return false
+            }
+            if !validated, case .object? = schema["additionalProperties"] {
+                validated = true
             }
             let evaluatedByComposedSchema = schemaEvaluatesObjectProperty(property, schema: schema)
             if !validated, !evaluatedByComposedSchema, schema["unevaluatedProperties"] == .bool(false) {
@@ -4075,6 +4081,9 @@ public enum OpenAICompatibility {
             return true
         }
         if !patternPropertySchemas(for: property, schema: schema).isEmpty {
+            return true
+        }
+        if schema["additionalProperties"] == .bool(true) || schema["additionalProperties"]?.objectValue != nil {
             return true
         }
         let composed = composedParameterSchemas(schema["allOf"]) + composedParameterSchemas(schema["anyOf"]) + composedParameterSchemas(schema["oneOf"])
@@ -4132,6 +4141,7 @@ public enum OpenAICompatibility {
 
     private static func arrayValueSatisfiesSchema(_ value: JSONValue, schema: [String: JSONValue]) -> Bool {
         guard case .array(let values) = value else { return false }
+        var evaluatedItemIndices = Set<Int>()
         if let minItems = schema["minItems"]?.integerValue, values.count < minItems {
             return false
         }
@@ -4147,7 +4157,11 @@ public enum OpenAICompatibility {
         }
         if let containsSchema = schema["contains"] {
             let itemSchema = schemaWithInheritedDefinitions(containsSchema, root: .object(schema))
-            let matches = values.filter { argumentValueSatisfiesSchema($0, schema: itemSchema, required: true) }.count
+            var matches = 0
+            for (index, item) in values.enumerated() where argumentValueSatisfiesSchema(item, schema: itemSchema, required: true) {
+                matches += 1
+                evaluatedItemIndices.insert(index)
+            }
             let minContains = schema["minContains"]?.integerValue ?? 1
             if matches < minContains {
                 return false
@@ -4169,38 +4183,51 @@ public enum OpenAICompatibility {
             if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
                 return false
             }
+            evaluatedItemIndices.insert(index)
         }
+        let extraStart = min(prefixItems.count, values.count)
         if schema["additionalItems"] == .bool(false), values.count > prefixItems.count {
             return false
         }
+        if schema["additionalItems"] == .bool(true) {
+            for index in extraStart..<values.count {
+                evaluatedItemIndices.insert(index)
+            }
+        }
         if case .object? = schema["additionalItems"] {
             let itemSchema = schemaWithInheritedDefinitions(schema["additionalItems"], root: .object(schema))
-            for index in prefixItems.count..<values.count {
+            for index in extraStart..<values.count {
                 if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
                     return false
                 }
+                evaluatedItemIndices.insert(index)
             }
         }
         if schema["items"] == .bool(false), values.count > prefixItems.count {
             return false
         }
+        if schema["items"] == .bool(true) {
+            for index in extraStart..<values.count {
+                evaluatedItemIndices.insert(index)
+            }
+        }
         if case .object? = schema["items"] {
             let itemSchema = schemaWithInheritedDefinitions(schema["items"], root: .object(schema))
-            for index in prefixItems.count..<values.count {
+            for index in extraStart..<values.count {
                 if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
                     return false
                 }
+                evaluatedItemIndices.insert(index)
             }
         }
-        let extrasEvaluated = schema["additionalItems"] == .bool(true)
-            || (schema["additionalItems"]?.objectValue != nil)
-            || (schema["items"]?.objectValue != nil)
-        if !extrasEvaluated, schema["unevaluatedItems"] == .bool(false), values.count > prefixItems.count {
-            return false
+        if schema["unevaluatedItems"] == .bool(false) {
+            for index in values.indices where !evaluatedItemIndices.contains(index) {
+                return false
+            }
         }
-        if !extrasEvaluated, case .object? = schema["unevaluatedItems"] {
+        if case .object? = schema["unevaluatedItems"] {
             let itemSchema = schemaWithInheritedDefinitions(schema["unevaluatedItems"], root: .object(schema))
-            for index in prefixItems.count..<values.count {
+            for index in values.indices where !evaluatedItemIndices.contains(index) {
                 if !argumentValueSatisfiesSchema(values[index], schema: itemSchema, required: true) {
                     return false
                 }
