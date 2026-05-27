@@ -1852,6 +1852,10 @@ public enum OpenAICompatibility {
                 "path": firstArgument(in: arguments, keys: pathPropertyAliases() + ["directory", "dir"])?.value,
                 "limit": firstArgument(in: arguments, keys: ["limit", "maxResults", "max_results"])?.value
             ])
+        case "readlints":
+            return compactJSON([
+                "paths": firstArgument(in: arguments, keys: fileCollectionAliases())?.value
+            ])
         default:
             return arguments
         }
@@ -2298,7 +2302,7 @@ public enum OpenAICompatibility {
                 output[pathKey] = .string(".")
             }
         case "readlints":
-            copy("paths", as: ["files", "filePaths", "file_paths"])
+            copyFirst(fileCollectionAliases(), as: fileCollectionAliases())
         case "mcp":
             copyFirst(["providerIdentifier", "provider_identifier", "provider", "server", "serverName", "server_name"], as: ["provider", "server", "serverName", "server_name"])
             copyFirst(["toolName", "tool_name", "tool", "name"], as: ["tool", "name", "tool_name"])
@@ -4286,7 +4290,7 @@ public enum OpenAICompatibility {
         case "ls":
             return has(pathPropertyAliases() + ["directory", "dir"])
         case "readlints":
-            return has(["paths", "files", "filePaths", "file_paths"])
+            return has(fileCollectionAliases())
         case "mcp":
             return has(["toolName", "tool_name", "tool", "name"])
         case "semsearch":
@@ -4504,6 +4508,15 @@ public enum OpenAICompatibility {
 
     private static func pathPropertyAliases() -> [String] {
         [
+            "path", "file_path", "filePath", "filename", "file",
+            "target", "targetPath", "target_path", "targetFile", "target_file",
+            "absolutePath", "absolute_path", "relativePath", "relative_path"
+        ]
+    }
+
+    private static func fileCollectionAliases() -> [String] {
+        [
+            "paths", "files", "filePaths", "file_paths",
             "path", "file_path", "filePath", "filename", "file",
             "target", "targetPath", "target_path", "targetFile", "target_file",
             "absolutePath", "absolute_path", "relativePath", "relative_path"

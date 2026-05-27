@@ -5440,6 +5440,112 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual(arguments[1]["targetDirectories"] as? [String], ["src", "app"])
     }
 
+    func testChatToolCallsMapSDKReadLintsToFilePathArraySchema() throws {
+        let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"check diagnostics"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"get_diagnostics",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "filePaths":{"type":"array","items":{"type":"string"},"minItems":1}
+                  },
+                  "required":["filePaths"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_readlints",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "readLints", arguments: [
+                    "path": .string("src/App.tsx")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let choices = try XCTUnwrap(object["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+        let arguments = try decodedArguments(function)
+
+        XCTAssertEqual(function["name"] as? String, "get_diagnostics")
+        XCTAssertEqual(arguments["filePaths"] as? [String], ["src/App.tsx"])
+        XCTAssertNil(arguments["paths"])
+    }
+
+    func testChatToolResultsFeedDiagnosticsBackWithSDKReadLintsArguments() throws {
+        let requestData = Data(#"""
+        {
+          "model":"composer-2.5",
+          "messages":[{"role":"user","content":"check diagnostics"}],
+          "tools":[
+            {
+              "type":"function",
+              "function":{
+                "name":"get_diagnostics",
+                "parameters":{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "properties":{
+                    "filePaths":{"type":"array","items":{"type":"string"},"minItems":1}
+                  },
+                  "required":["filePaths"]
+                }
+              }
+            }
+          ]
+        }
+        """#.utf8)
+        let prepared = try OpenAICompatibility.prepareChatRequest(requestData)
+        let response = OpenAICompatibility.chatCompletionResponse(
+            id: "chatcmpl_readlints_feedback",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "readLints", arguments: [
+                    "paths": .array([.string("src/App.tsx")])
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+        let choices = try XCTUnwrap(response["choices"] as? [[String: Any]])
+        let message = try XCTUnwrap(choices.first?["message"] as? [String: Any])
+        let toolCalls = try XCTUnwrap(message["tool_calls"] as? [[String: Any]])
+        let requestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+        let tools = try XCTUnwrap(requestObject["tools"] as? [[String: Any]])
+
+        let continueData = try JSONSerialization.data(withJSONObject: [
+            "model": "composer-2.5",
+            "messages": [
+                ["role": "user", "content": "check diagnostics"],
+                ["role": "assistant", "content": NSNull(), "tool_calls": toolCalls],
+                ["role": "tool", "tool_call_id": toolCalls.first?["id"] as? String ?? "", "content": "No diagnostics"]
+            ],
+            "tools": tools
+        ])
+        let continued = try OpenAICompatibility.prepareChatRequest(continueData)
+        let prefix = "LOCAL TOOL RESULT: "
+        let feedbackLine = try XCTUnwrap(continued.prompt.split(separator: "\n").first { $0.hasPrefix(prefix) })
+        let feedback = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(String(feedbackLine.dropFirst(prefix.count)).utf8)) as? [String: Any])
+        let arguments = try XCTUnwrap(feedback["arguments"] as? [String: Any])
+
+        XCTAssertEqual(feedback["toolName"] as? String, "readlints")
+        XCTAssertEqual(arguments["paths"] as? [String], ["src/App.tsx"])
+        XCTAssertNil(arguments["filePaths"])
+    }
+
     func testChatToolCallsMapSDKGlobToPluralArrayClientSchema() throws {
         let prepared = try OpenAICompatibility.prepareChatRequest(Data(#"""
         {
@@ -7011,6 +7117,48 @@ final class LocalAPIServerTests: XCTestCase {
         XCTAssertEqual((viewRange[1] as? NSNumber)?.intValue, 14)
         XCTAssertNil(arguments["offset"])
         XCTAssertNil(arguments["limit"])
+    }
+
+    func testResponsesFunctionCallsMapSDKReadLintsToFilesArraySchema() throws {
+        let prepared = try OpenAICompatibility.prepareResponsesRequest(Data(#"""
+        {
+          "model":"composer-2.5",
+          "input":"check diagnostics",
+          "tools":[
+            {
+              "type":"function",
+              "name":"diagnostics",
+              "parameters":{
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                  "files":{"type":"array","items":{"type":"string"},"minItems":1}
+                },
+                "required":["files"]
+              }
+            }
+          ]
+        }
+        """#.utf8))
+
+        let object = OpenAICompatibility.responseObject(
+            id: "resp_readlints",
+            created: 1,
+            prepared: prepared,
+            output: CursorSDKOutput(text: "", toolCalls: [
+                CursorToolCall(name: "readLints", arguments: [
+                    "paths": .string("src/App.tsx")
+                ])
+            ], agentID: "agent-test", runID: "run-test")
+        )
+
+        let outputItems = try XCTUnwrap(object["output"] as? [[String: Any]])
+        let functionCall = try XCTUnwrap(outputItems.first { ($0["type"] as? String) == "function_call" })
+        let arguments = try decodedArguments(functionCall)
+
+        XCTAssertEqual(functionCall["name"] as? String, "diagnostics")
+        XCTAssertEqual(arguments["files"] as? [String], ["src/App.tsx"])
+        XCTAssertNil(arguments["paths"])
     }
 
     func testResponsesFunctionCallsPreferSchemaValidProviderSpecificMCPTool() throws {
