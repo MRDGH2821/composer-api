@@ -1194,13 +1194,13 @@ public enum OpenAICompatibility {
         transcript.append("")
         transcript.append("LOCAL TOOL INVENTORY:")
         transcript.append("Client tool targets: \(tools.map(\.name).joined(separator: ", "))")
-        transcript.append("These are client execution targets, not the names you should emit.")
-        transcript.append("For local work, emit only SDK tool names from the SDK TOOL ROUTING MAP. The adapter forwards those SDK calls to the matching client tool names and schemas.")
-        transcript.append("Prefer built-in SDK routes for shell/read/write/edit/glob/grep/ls-style client tools. Use SDK mcp for unique client tools and MCP/server tools.")
-        transcript.append("When the user names a specific allowed client tool, use the matching SDK TOOL ROUTING MAP route and do not substitute a different tool.")
+        transcript.append("These are client execution targets. Prefer the SDK mcp route for the exact client tool name and schema.")
+        transcript.append("For local work, emit one SDK tool call from the SDK TOOL ROUTING MAP. The preferred route is SDK mcp with providerIdentifier and toolName pointing at the exact client tool.")
+        transcript.append("Built-in SDK shell/read/write/edit/glob/grep/ls-style routes are compatibility fallbacks only. Prefer SDK mcp for harness tools and MCP/server tools so the client schema is preserved.")
+        transcript.append("When the user names a specific allowed client tool, use the SDK mcp route for that exact client tool and do not substitute a different tool.")
         transcript.append("If you need a local tool, emit the tool call before prose. Do not write progress text such as \"creating the file\" instead of calling a tool.")
         if hasCompatibleTool("shell", in: tools) {
-            transcript.append("A shell client tool is available. For general file creation or overwrite requests, prefer an SDK shell call using mkdir -p and a quoted heredoc.")
+            transcript.append("A shell client tool is available. For general file creation or overwrite requests, prefer SDK mcp to that shell client tool with mkdir -p and a quoted heredoc.")
         }
         for tool in tools {
             let record = toolInventoryRecord(tool)
@@ -1221,7 +1221,7 @@ public enum OpenAICompatibility {
         let routes = sdkRoutingRecords(tools: tools, context: context)
         guard !routes.isEmpty else { return }
         transcript.append("SDK TOOL ROUTING MAP:")
-        transcript.append("Use these SDK tool names; the adapter forwards them to the listed client tool and argument shape.")
+        transcript.append("Prefer routes marked preferred. They forward through SDK mcp to the exact client tool and argument schema.")
         for route in routes {
             if let data = try? JSONSerialization.data(withJSONObject: route, options: [.withoutEscapingSlashes]),
                let json = String(data: data, encoding: .utf8) {
@@ -1232,18 +1232,11 @@ public enum OpenAICompatibility {
 
     private static func sdkRoutingRecords(tools: [OpenAIToolSpec], context: ToolCallContext?) -> [[String: Any]] {
         var routes: [[String: Any]] = []
-        for sample in sdkRoutingSamples() {
-            guard let resolved = resolveToolCall(sample, tools: tools, context: context) else { continue }
-            routes.append([
-                "sdk": sample.name,
-                "client": resolved.name,
-                "clientArgs": resolved.arguments.mapValues(\.foundationValue)
-            ])
-        }
         for tool in tools {
-            guard let target = mcpTarget(forClientToolName: tool.name, includeMapped: false) else { continue }
+            guard let target = mcpTarget(forClientToolName: tool.name, includeMapped: true) else { continue }
             routes.append([
                 "sdk": "mcp",
+                "preferred": true,
                 "client": tool.name,
                 "sdkArgs": [
                     "providerIdentifier": target.provider,
@@ -1252,7 +1245,17 @@ public enum OpenAICompatibility {
                 ]
             ])
         }
-        return Array(routes.prefix(24))
+        for sample in sdkRoutingSamples() {
+            guard let resolved = resolveToolCall(sample, tools: tools, context: context) else { continue }
+            routes.append([
+                "sdk": sample.name,
+                "preferred": false,
+                "compatibility": true,
+                "client": resolved.name,
+                "clientArgs": resolved.arguments.mapValues(\.foundationValue)
+            ])
+        }
+        return routes
     }
 
     private static func sdkRoutingSamples() -> [CursorToolCall] {
@@ -1277,7 +1280,7 @@ public enum OpenAICompatibility {
         var record: [String: Any] = ["name": tool.name]
         if let description = tool.description { record["description"] = description }
         if let parameters = tool.parameters { record["parameters"] = parameters.foundationValue }
-        if let target = mcpTarget(forClientToolName: tool.name, includeMapped: false) {
+        if let target = mcpTarget(forClientToolName: tool.name, includeMapped: true) {
             record["sdk_mcp"] = [
                 "providerIdentifier": target.provider,
                 "toolName": target.toolName,
@@ -1296,22 +1299,15 @@ public enum OpenAICompatibility {
             return
         }
         if hasCompatibleTool("shell", in: tools) {
-            transcript.append("Use SDK shell when it maps to the client shell/bash tool. For unique shell-like client tools, use the SDK mcp route. For creating or overwriting a file, run mkdir -p for the parent directory and write the file with a single quoted heredoc. After the client returns a LOCAL TOOL RESULT, continue.")
+            transcript.append("Use the preferred SDK mcp route for the client shell/bash tool. For creating or overwriting a file, run mkdir -p for the parent directory and write the file with a single quoted heredoc. After the client returns a LOCAL TOOL RESULT, continue.")
         } else {
-            transcript.append("For creating or overwriting a file, use SDK write when it maps to the client write tool. For unique writer tools, use the SDK mcp route with matching arguments. After the client returns a LOCAL TOOL RESULT, continue.")
+            transcript.append("For creating or overwriting a file, use the preferred SDK mcp route for a client write/edit file tool with matching arguments. After the client returns a LOCAL TOOL RESULT, continue.")
         }
     }
 
     private static func requestedToolHint(for toolName: String) -> String {
-        if canonicalToolName(toolName) == "glob", normalizedName(toolName) != "glob" {
-            return "Use SDK glob now; it will be forwarded to client tool \(toolName) with arguments matching its schema. Do not substitute shell or prose for this explicitly requested client tool."
-        }
-        let canonical = canonicalToolName(toolName)
-        if isKnownMappedToolName(toolName) {
-            return "Use SDK \(canonical) now; it will be forwarded to client tool \(toolName) with arguments matching its schema. Do not substitute a different tool."
-        }
-        if let mcpTarget = mcpTarget(forClientToolName: toolName, includeMapped: false) {
-            return "Use SDK mcp now with providerIdentifier \"\(mcpTarget.provider)\", toolName \"\(mcpTarget.toolName)\", and args matching the \(toolName) schema. Do not use SDK shell/write as a substitute for this explicitly requested client tool."
+        if let mcpTarget = mcpTarget(forClientToolName: toolName, includeMapped: true) {
+            return "Use SDK mcp now with providerIdentifier \"\(mcpTarget.provider)\", toolName \"\(mcpTarget.toolName)\", and args matching the \(toolName) schema. Do not substitute another tool for this explicitly requested client tool."
         }
         return "Use SDK mcp now with providerIdentifier \"client\", toolName \"\(toolName)\", and args matching the \(toolName) schema. Do not substitute a different tool."
     }
