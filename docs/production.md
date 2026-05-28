@@ -26,6 +26,12 @@ API for Cursor ships as a signed macOS DMG and updates through Sparkle.
 - `CLOUDFLARE_API_TOKEN`: token with Worker deploy and R2 object write permissions.
 - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare account id.
 
+The helper script `scripts/set-release-secrets.sh` can load these from
+`~/.config/api-for-cursor/release-secrets` with GitHub CLI. It expects the
+secret files created during release prep and reads `APPLE_ID`, `APPLE_TEAM_ID`,
+and `CLOUDFLARE_ACCOUNT_ID` from either environment variables or matching local
+files in that directory.
+
 ## Cloudflare Setup
 
 Create the release bucket once:
