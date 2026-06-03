@@ -1,4 +1,5 @@
-const stubUrl = new URL("./stub-cloudflare-containers.mjs", import.meta.url).href;
+const stubUrl = new URL("./stub-cloudflare-containers.mjs", import.meta.url)
+  .href;
 
 export async function resolve(specifier, context, nextResolve) {
   if (specifier === "@cloudflare/containers") {

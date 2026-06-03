@@ -6,12 +6,22 @@ const TOOL_SEP = "<|tool_sep|>";
 const TOOL_CALL_BEGIN_MARKERS = [
   TOOL_CALL_BEGIN,
   "<｜tool▁call▁begin｜>",
-  "<|tool_call_begin|>"
+  "<|tool_call_begin|>",
 ];
-const TOOL_CALL_END_MARKERS = [TOOL_CALL_END, "<｜tool▁call▁end｜>", "<|tool_call_end|>"];
-const TOOL_MARKER_CANDIDATES = [TOOL_CALLS_BEGIN, TOOL_CALLS_END, TOOL_CALL_BEGIN, TOOL_CALL_END, TOOL_SEP].flatMap((marker) => [
+const TOOL_CALL_END_MARKERS = [
+  TOOL_CALL_END,
+  "<｜tool▁call▁end｜>",
+  "<|tool_call_end|>",
+];
+const TOOL_MARKER_CANDIDATES = [
+  TOOL_CALLS_BEGIN,
+  TOOL_CALLS_END,
+  TOOL_CALL_BEGIN,
+  TOOL_CALL_END,
+  TOOL_SEP,
+].flatMap((marker) => [
   marker,
-  marker.replaceAll("|", "｜").replaceAll("_", "▁")
+  marker.replaceAll("|", "｜").replaceAll("_", "▁"),
 ]);
 
 export class ComposerToolCallFilter {
@@ -58,7 +68,10 @@ export class ComposerToolCallFilter {
         continue;
       }
 
-      const end = findComposerToolMarker(this.buffer.slice(begin.length), "tool_calls_end");
+      const end = findComposerToolMarker(
+        this.buffer.slice(begin.length),
+        "tool_calls_end",
+      );
       if (!end) {
         if (force) {
           events.push({ type: "text", text: this.buffer });
@@ -126,7 +139,10 @@ export function extractComposerToolOutput(text) {
 
 function findCallBeginMarker(body, offset) {
   for (const marker of TOOL_CALL_BEGIN_MARKERS) {
-    if (body.indexOf(marker, offset) === offset || body.indexOf(marker, offset) !== -1) {
+    if (
+      body.indexOf(marker, offset) === offset ||
+      body.indexOf(marker, offset) !== -1
+    ) {
       const index = body.indexOf(marker, offset);
       if (index !== -1) return marker;
     }
@@ -194,10 +210,21 @@ function parseJsonToolCallBody(value) {
     const parsed = JSON.parse(value);
     if (!isRecord(parsed)) return null;
     const fn = isRecord(parsed.function) ? parsed.function : undefined;
-    const name = firstString(parsed.name, parsed.tool, parsed.tool_name, parsed.toolName, fn?.name);
+    const name = firstString(
+      parsed.name,
+      parsed.tool,
+      parsed.tool_name,
+      parsed.toolName,
+      fn?.name,
+    );
     if (!name) return null;
     const rawArguments =
-      parsed.arguments ?? parsed.args ?? parsed.input ?? parsed.parameters ?? parsed.params ?? fn?.arguments;
+      parsed.arguments ??
+      parsed.args ??
+      parsed.input ??
+      parsed.parameters ??
+      parsed.params ??
+      fn?.arguments;
     return { name, arguments: recordFromToolArguments(rawArguments) ?? {} };
   } catch {
     return null;
@@ -223,7 +250,9 @@ function recordFromToolArguments(value) {
 }
 
 function parseInlineToolCall(value) {
-  const match = /^([A-Za-z0-9_.-]+)\s*(?:\(([\s\S]*)\)|\[([\s\S]*)\])?$/.exec(value.trim());
+  const match = /^([A-Za-z0-9_.-]+)\s*(?:\(([\s\S]*)\)|\[([\s\S]*)\])?$/.exec(
+    value.trim(),
+  );
   if (!match) return null;
   const name = match[1].trim();
   const rawArgs = (match[2] ?? match[3] ?? "").trim();
@@ -272,7 +301,10 @@ function parseComposerToolArgument(value) {
   if (value === "false") return false;
   if (value === "null") return null;
   if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
-  if ((value.startsWith("{") && value.endsWith("}")) || (value.startsWith("[") && value.endsWith("]"))) {
+  if (
+    (value.startsWith("{") && value.endsWith("}")) ||
+    (value.startsWith("[") && value.endsWith("]"))
+  ) {
     try {
       return JSON.parse(value);
     } catch {
@@ -291,7 +323,7 @@ function canonicalizeComposerToolMarkers(value) {
         if (normalized === "tool_call_begin") return TOOL_CALL_BEGIN;
         if (normalized === "tool_call_end") return TOOL_CALL_END;
         return `<|${normalized}|>`;
-      }
+      },
     )
     .replace(/<\|tool_calls<\|tool_calls_begin\|>/g, TOOL_CALLS_BEGIN)
     .replace(/<\|tool_calls<\|tool_calls_end\|>/g, TOOL_CALLS_END)
@@ -302,7 +334,8 @@ function stripEmbeddedToolMarkerBlocks(value) {
   const normalized = canonicalizeComposerToolMarkers(value);
   const beginIndex = normalized.indexOf(TOOL_CALLS_BEGIN);
   const endIndex = normalized.lastIndexOf(TOOL_CALLS_END);
-  if (beginIndex === -1 || endIndex === -1 || endIndex <= beginIndex) return value.trim();
+  if (beginIndex === -1 || endIndex === -1 || endIndex <= beginIndex)
+    return value.trim();
   return `${normalized.slice(0, beginIndex)}${normalized.slice(endIndex + TOOL_CALLS_END.length)}`.trim();
 }
 
@@ -314,11 +347,17 @@ function findComposerToolMarker(value, marker) {
 }
 
 function toolMarkerPrefixIndex(value) {
-  const max = Math.min(value.length, Math.max(...TOOL_MARKER_CANDIDATES.map((candidate) => candidate.length)));
+  const max = Math.min(
+    value.length,
+    Math.max(...TOOL_MARKER_CANDIDATES.map((candidate) => candidate.length)),
+  );
   for (let length = max; length >= 1; length -= 1) {
     const index = value.length - length;
     const suffix = value.slice(index);
-    if (TOOL_MARKER_CANDIDATES.some((candidate) => candidate.startsWith(suffix))) return index;
+    if (
+      TOOL_MARKER_CANDIDATES.some((candidate) => candidate.startsWith(suffix))
+    )
+      return index;
   }
   return -1;
 }

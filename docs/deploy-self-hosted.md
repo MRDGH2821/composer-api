@@ -92,15 +92,15 @@ Use your real Cursor API key as the Bearer token. Any non-`cmp_` token is passed
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CURSOR_API_PORT` | `8787` | Host port mapped to the API container |
-| `WORKSPACE` | `.` | Host path mounted at `/workspace` in the bridge (agent working directory) |
-| `CURSOR_SDK_BRIDGE_TOKEN` | empty | Optional shared secret; set the same value for `api` and `bridge` |
-| `CURSOR_API_BASE` | `https://api.cursor.com` | Cursor public API base |
-| `CURSOR_SDK_BRIDGE_TIMEOUT_MS` | `180000` | Bridge request timeout |
-| `CURSOR_CLIENT_VERSION` | `2.6.22` | Cursor client version header |
-| `CURSOR_SDK_CLIENT_VERSION` | `sdk-1.0.13` | SDK client version |
+| Variable                       | Default                  | Description                                                               |
+| ------------------------------ | ------------------------ | ------------------------------------------------------------------------- |
+| `CURSOR_API_PORT`              | `8787`                   | Host port mapped to the API container                                     |
+| `WORKSPACE`                    | `.`                      | Host path mounted at `/workspace` in the bridge (agent working directory) |
+| `CURSOR_SDK_BRIDGE_TOKEN`      | empty                    | Optional shared secret; set the same value for `api` and `bridge`         |
+| `CURSOR_API_BASE`              | `https://api.cursor.com` | Cursor public API base                                                    |
+| `CURSOR_SDK_BRIDGE_TIMEOUT_MS` | `180000`                 | Bridge request timeout                                                    |
+| `CURSOR_CLIENT_VERSION`        | `2.6.22`                 | Cursor client version header                                              |
+| `CURSOR_SDK_CLIENT_VERSION`    | `sdk-1.0.13`             | SDK client version                                                        |
 
 Bridge health (inside the compose network):
 
@@ -144,14 +144,14 @@ npm run docker:api              # terminal 2
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---------|----------------|
-| `api` waits on `bridge` | Bridge not healthy; check `docker compose logs bridge` |
-| `401` on `/v1/*` | Missing or invalid `Authorization: Bearer` Cursor key |
-| `504` / bridge timeout | Cursor or bridge slow; raise `CURSOR_SDK_BRIDGE_TIMEOUT_MS` |
+| Symptom                                  | Likely cause                                                                                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api` waits on `bridge`                  | Bridge not healthy; check `docker compose logs bridge`                                                                                            |
+| `401` on `/v1/*`                         | Missing or invalid `Authorization: Bearer` Cursor key                                                                                             |
+| `504` / bridge timeout                   | Cursor or bridge slow; raise `CURSOR_SDK_BRIDGE_TIMEOUT_MS`                                                                                       |
 | Bridge exits with `spawn /bin/sh ENOENT` | Non-Composer models need a shell; rebuild the bridge image (`docker compose build --no-cache bridge`) or use `composer-2.5` / `composer-2.5-fast` |
-| Agent cannot see project files | `WORKSPACE` volume not mounted or wrong path |
-| `CURSOR_SDK_BRIDGE_URL is required` | API container started without bridge URL env |
+| Agent cannot see project files           | `WORKSPACE` volume not mounted or wrong path                                                                                                      |
+| `CURSOR_SDK_BRIDGE_URL is required`      | API container started without bridge URL env                                                                                                      |
 
 ## Related docs
 

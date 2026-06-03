@@ -31,12 +31,12 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: "local",
-  baseURL: "http://127.0.0.1:8787/v1"
+  baseURL: "http://127.0.0.1:8787/v1",
 });
 
 const completion = await client.chat.completions.create({
   model: "composer-2.5",
-  messages: [{ role: "user", content: "Write a TypeScript debounce." }]
+  messages: [{ role: "user", content: "Write a TypeScript debounce." }],
 });
 ```
 

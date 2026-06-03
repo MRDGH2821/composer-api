@@ -11,30 +11,38 @@ function parsePort(value: string | undefined, fallback: number): number {
 }
 
 async function loadRuntime() {
-  const [{ handleRequest, defaultDeps }, { FakeD1, fakeCtx }] = await Promise.all([
-    import("../worker/index.ts"),
-    import("../worker/test-helpers.ts")
-  ]);
+  const [{ handleRequest, defaultDeps }, { FakeD1, fakeCtx }] =
+    await Promise.all([
+      import("../worker/index.ts"),
+      import("../worker/test-helpers.ts"),
+    ]);
   return { handleRequest, defaultDeps, FakeD1, fakeCtx };
 }
 
-export function createSelfHostedEnv(FakeD1: typeof import("../worker/test-helpers.ts").FakeD1): Env {
+export function createSelfHostedEnv(
+  FakeD1: typeof import("../worker/test-helpers.ts").FakeD1,
+): Env {
   const bridgeUrl = process.env.CURSOR_SDK_BRIDGE_URL?.trim();
   if (!bridgeUrl) {
-    throw new Error("CURSOR_SDK_BRIDGE_URL is required (for example http://bridge:8792/sdk)");
+    throw new Error(
+      "CURSOR_SDK_BRIDGE_URL is required (for example http://bridge:8792/sdk)",
+    );
   }
 
   return {
     DB: new FakeD1() as unknown as D1Database,
     ASSETS: {
-      fetch: async () => new Response("Not Found", { status: 404 })
+      fetch: async () => new Response("Not Found", { status: 404 }),
     } as unknown as Fetcher,
-    CURSOR_API_BASE: process.env.CURSOR_API_BASE?.trim() || "https://api.cursor.com",
-    CURSOR_CLIENT_VERSION: process.env.CURSOR_CLIENT_VERSION?.trim() || "2.6.22",
-    CURSOR_SDK_CLIENT_VERSION: process.env.CURSOR_SDK_CLIENT_VERSION?.trim() || "sdk-1.0.13",
+    CURSOR_API_BASE:
+      process.env.CURSOR_API_BASE?.trim() || "https://api.cursor.com",
+    CURSOR_CLIENT_VERSION:
+      process.env.CURSOR_CLIENT_VERSION?.trim() || "2.6.22",
+    CURSOR_SDK_CLIENT_VERSION:
+      process.env.CURSOR_SDK_CLIENT_VERSION?.trim() || "sdk-1.0.13",
     CURSOR_SDK_BRIDGE_URL: bridgeUrl,
     CURSOR_SDK_BRIDGE_TOKEN: process.env.CURSOR_SDK_BRIDGE_TOKEN,
-    CURSOR_SDK_BRIDGE_TIMEOUT_MS: process.env.CURSOR_SDK_BRIDGE_TIMEOUT_MS
+    CURSOR_SDK_BRIDGE_TIMEOUT_MS: process.env.CURSOR_SDK_BRIDGE_TIMEOUT_MS,
   };
 }
 
@@ -42,7 +50,7 @@ function healthResponse(): Response {
   return Response.json({
     ok: true,
     service: "api-for-cursor-self-hosted",
-    bridgeConfigured: Boolean(process.env.CURSOR_SDK_BRIDGE_URL?.trim())
+    bridgeConfigured: Boolean(process.env.CURSOR_SDK_BRIDGE_URL?.trim()),
   });
 }
 
@@ -54,7 +62,11 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function nodeRequestToWeb(request: IncomingMessage, body: Buffer, origin: string): Request {
+function nodeRequestToWeb(
+  request: IncomingMessage,
+  body: Buffer,
+  origin: string,
+): Request {
   const url = new URL(request.url || "/", origin);
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
@@ -75,7 +87,10 @@ function nodeRequestToWeb(request: IncomingMessage, body: Buffer, origin: string
   return new Request(url.toString(), init);
 }
 
-async function writeWebResponse(response: Response, res: ServerResponse): Promise<void> {
+async function writeWebResponse(
+  response: Response,
+  res: ServerResponse,
+): Promise<void> {
   res.statusCode = response.status;
   response.headers.forEach((value, key) => {
     if (key.toLowerCase() === "transfer-encoding") return;
@@ -87,7 +102,9 @@ async function writeWebResponse(response: Response, res: ServerResponse): Promis
     return;
   }
 
-  const nodeStream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
+  const nodeStream = Readable.fromWeb(
+    response.body as ReadableStream<Uint8Array>,
+  );
   for await (const chunk of nodeStream) {
     res.write(chunk);
   }
@@ -112,10 +129,16 @@ export async function startApiServer(): Promise<http.Server> {
 
       const body = await readRequestBody(req);
       const webRequest = nodeRequestToWeb(req, body, origin);
-      const webResponse = await handleRequest(webRequest, env, ctx, defaultDeps);
+      const webResponse = await handleRequest(
+        webRequest,
+        env,
+        ctx,
+        defaultDeps,
+      );
       await writeWebResponse(webResponse, res);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Internal Server Error";
+      const message =
+        error instanceof Error ? error.message : "Internal Server Error";
       if (!res.headersSent) {
         res.statusCode = 500;
         res.setHeader("content-type", "application/json");
@@ -131,7 +154,9 @@ export async function startApiServer(): Promise<http.Server> {
     server.listen(port, host, () => resolve());
   });
 
-  console.log(`API for Cursor self-hosted server listening on http://${host}:${port}/v1`);
+  console.log(
+    `API for Cursor self-hosted server listening on http://${host}:${port}/v1`,
+  );
   return server;
 }
 
