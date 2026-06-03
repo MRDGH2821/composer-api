@@ -23,6 +23,7 @@
     "typecheck": "tsc --noEmit",
     "deploy": "vite build && wrangler deploy",
     "docker:api": "tsx docker/api-server.ts",
+    "docker:watch": "docker compose watch",
     "db:migrate:local": "wrangler d1 migrations apply composer-api --local",
     "db:migrate:remote": "wrangler d1 migrations apply composer-api --remote"
   },

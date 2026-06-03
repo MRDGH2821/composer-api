@@ -129,6 +129,9 @@ cp docker/env.example .env
 docker compose up --build
 ```
 
+For development, use `docker compose up --watch` to sync `worker/` and bridge
+scripts into the running containers. See [docs/deploy-self-hosted.md](docs/deploy-self-hosted.md).
+
 The API listens on `http://127.0.0.1:8787/v1` by default. See [docs/deploy-self-hosted.md](docs/deploy-self-hosted.md) for configuration, security notes, and limitations compared to the macOS app.
 
 ## Cloudflare

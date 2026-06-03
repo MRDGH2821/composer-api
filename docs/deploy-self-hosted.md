@@ -46,6 +46,18 @@ cp docker/env.example .env
 docker compose up --build
 ```
 
+For local development, sync source changes into the running containers and restart
+automatically (requires Docker Compose v2.22+):
+
+```bash
+docker compose up --build --watch
+# or, after the stack is already up:
+npm run docker:watch
+```
+
+Watch syncs `worker/` and `docker/` into **api**, bridge scripts into **bridge**,
+and rebuilds either service when `package.json` or `package-lock.json` changes.
+
 Default base URL:
 
 ```txt

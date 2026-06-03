@@ -17,7 +17,8 @@ import {
   sdkRunFailureSummary,
   statusFromError,
   toolCallFromDelta,
-  validateClientMcpToolCall
+  validateClientMcpToolCall,
+  isBenignCancellationError
 } from "./cursor-sdk-local-agent-bridge.mjs";
 import { extractComposerToolOutput, parseComposerToolCalls } from "./composer-tool-markers.mjs";
 
@@ -76,6 +77,19 @@ describe("Cursor SDK local-agent bridge", () => {
     expect(normalizeModel("composer-latest")).toBe("composer-2.5");
     expect(normalizeModel("auto")).toBe("default");
     expect(normalizeModel("gpt-5.5")).toBe("gpt-5.5");
+  });
+
+  it("treats ConnectRPC cancel errors as benign aborts", () => {
+    expect(
+      isBenignCancellationError({
+        rawMessage: "This operation was aborted",
+        code: 1,
+        name: "ConnectError",
+        cause: { name: "AbortError", code: "ABORT_ERR" }
+      })
+    ).toBe(true);
+    expect(isBenignCancellationError({ name: "AbortError" })).toBe(true);
+    expect(isBenignCancellationError(new Error("upstream unavailable"))).toBe(false);
   });
 
   it("parses embedded Composer tool-call markup into structured tool calls", () => {

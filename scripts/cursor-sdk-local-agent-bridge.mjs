@@ -60,7 +60,8 @@ export {
   statusFromError,
   startServer,
   validateClientMcpToolCall,
-  toolCallFromDelta
+  toolCallFromDelta,
+  isBenignCancellationError
 };
 
 function startServer() {
@@ -253,6 +254,7 @@ async function runLocalAgentBody(input, onRun, onEvent) {
   let run;
   let capturedToolCall = null;
   let cancelRequested = false;
+  let pendingCancellation = null;
   let text = "";
 
   const captureToolCall = async (toolCall, options = {}) => {
@@ -263,12 +265,12 @@ async function runLocalAgentBody(input, onRun, onEvent) {
     if (onEvent) onEvent({ type: "tool_call", toolCall: capturedToolCall });
     cancelRequested = true;
     if (run) {
-      const cancellation = run.cancel().catch(() => {
+      pendingCancellation = run.cancel().catch(() => {
         // The SDK may already be finishing the local run. The captured model
         // tool call is still the response we need to return to the client.
       });
       if (options.waitForCancel === true) {
-        await cancellation;
+        await pendingCancellation;
       }
     }
   };
@@ -333,6 +335,10 @@ async function runLocalAgentBody(input, onRun, onEvent) {
     }
   } finally {
     unregisterCapture();
+  }
+
+  if (pendingCancellation) {
+    await pendingCancellation.catch(() => {});
   }
 
   if (capturedToolCall) {
@@ -2166,7 +2172,12 @@ function isSpawnEnvironmentError(error) {
 }
 
 function isBenignCancellationError(error) {
-  return error?.name === "AbortError" || error?.code === "ABORT_ERR";
+  return flattenErrorValues(error).some((value) => {
+    if (value?.name === "AbortError" || value?.code === "ABORT_ERR") return true;
+    const message = String(value?.rawMessage || value?.message || "").toLowerCase();
+    if (message.includes("aborted") || message.includes("[canceled]")) return true;
+    return value?.code === 1 && (value?.name === "ConnectError" || message.includes("cancel"));
+  });
 }
 
 function isBenignPipeError(error) {
