@@ -10,8 +10,17 @@ import type {
   Env,
 } from "./types";
 
+interface CursorModelRecord {
+  id: string;
+  displayName?: string;
+  name?: string;
+  aliases?: string[];
+}
+
 interface CursorModelResponse {
-  items?: Array<{ id: string; displayName?: string; aliases?: string[] }>;
+  object?: string;
+  data?: CursorModelRecord[];
+  items?: CursorModelRecord[];
 }
 
 interface CursorAccessTokenResponse {
@@ -52,6 +61,22 @@ export async function listCursorModels(
   apiKey: string,
 ): Promise<CursorModelResponse> {
   return cursorPublicJson<CursorModelResponse>(env, deps, apiKey, "/v1/models");
+}
+
+export function cursorModelRecordsFromResponse(
+  response: CursorModelResponse,
+): CursorModelRecord[] {
+  if (Array.isArray(response.data) && response.data.length) {
+    return response.data.filter(
+      (record) => typeof record?.id === "string" && record.id.trim(),
+    );
+  }
+  if (Array.isArray(response.items) && response.items.length) {
+    return response.items.filter(
+      (record) => typeof record?.id === "string" && record.id.trim(),
+    );
+  }
+  return [];
 }
 
 export function resolveCursorModel(model: unknown): { id: string } | undefined {

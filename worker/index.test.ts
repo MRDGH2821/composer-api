@@ -2031,10 +2031,96 @@ describe("Worker", () => {
         expect.objectContaining({ id: "composer-2.5-fast" }),
         expect.objectContaining({ id: "gpt-5.3-codex" }),
         expect.objectContaining({ id: "gemini-3.1-pro" }),
-        expect.objectContaining({ id: "default" }),
+        expect.objectContaining({ id: "auto" }),
       ]),
     });
-    expect(body.data.map((model) => model.id)).not.toContain("gpt-5.5");
+    expect(body.data.map((model) => model.id)).not.toContain("default");
+    const modelIds = body.data.map((model) => model.id);
+    expect(
+      [...modelIds].sort((left, right) => {
+        if (left === "auto") return -1;
+        if (right === "auto") return 1;
+        return left.localeCompare(right, "en", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }),
+    ).toEqual(modelIds);
+    expect(body.data.map((model) => model.id)).toContain("gpt-5.5");
+  });
+
+  it("merges Cursor API model catalog into /v1/models", async () => {
+    const db = new FakeD1();
+    const env = makeEnv(db);
+    const base = fakeDeps();
+    const deps: Deps = {
+      ...base.deps,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/models") {
+          return Response.json({
+            object: "list",
+            data: [
+              { id: "gpt-5.5", displayName: "GPT-5.5" },
+              { id: "new-cursor-model", displayName: "New Cursor Model" },
+            ],
+          });
+        }
+        return base.deps.fetch(input, init);
+      },
+    };
+
+    const response = await handleRequest(
+      new Request("https://composer.test/v1/models", {
+        headers: { Authorization: "Bearer cursor_direct_key" },
+      }),
+      env,
+      fakeCtx(),
+      deps,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: Array<{ id: string; name: string }>;
+    };
+    const modelIds = body.data.map((model) => model.id);
+    expect(
+      [...modelIds].sort((left, right) => {
+        if (left === "auto") return -1;
+        if (right === "auto") return 1;
+        return left.localeCompare(right, "en", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }),
+    ).toEqual(modelIds);
+    expect(modelIds).toContain("auto");
+    expect(modelIds).not.toContain("default");
+    expect(modelIds).toEqual([
+      "auto",
+      "composer-2",
+      "composer-2.5",
+      "composer-2.5-fast",
+      "composer-latest",
+      "gemini-2.5-flash",
+      "gemini-3-flash",
+      "gemini-3.1-pro",
+      "gemini-3.5-flash",
+      "gpt-5-mini",
+      "gpt-5.1",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5.2",
+      "gpt-5.2-codex",
+      "gpt-5.3-codex",
+      "gpt-5.5",
+      "grok-4.3",
+      "grok-build-0.1",
+      "kimi-k2.5",
+      "new-cursor-model",
+    ]);
+    expect(body.data.find((model) => model.id === "gpt-5.5")?.name).toBe(
+      "GPT-5.5",
+    );
   });
 
   it("rejects an unknown cmp_ token without forwarding it to Cursor", async () => {

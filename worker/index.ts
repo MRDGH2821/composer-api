@@ -36,6 +36,7 @@ import {
   completionCharsFromOutput,
   doneChunk,
   modelList,
+  modelListForAuth,
   prepareChatRequest,
   prepareOpencodeSdkChatRequest,
   prepareResponsesRequest,
@@ -527,7 +528,7 @@ async function handleOpenAiRoute(
     if (!auth) return unauthorized();
     if (request.method !== "GET") return notFound();
     return json(
-      modelList({
+      await modelListForAuth(env, deps, auth.cursorApiKey, {
         opencode:
           route.surface === "opencode" || route.surface === "opencodev2",
         sdk: route.surface === "opencodev2",

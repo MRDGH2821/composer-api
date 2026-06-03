@@ -1,6 +1,13 @@
+import { cursorModelRecordsFromResponse, listCursorModels } from "./cursor";
 import { HttpError } from "./http";
 import { encodeSse } from "./sse";
-import type { CursorImage, CursorPrompt, CursorToolCall } from "./types";
+import type {
+  CursorImage,
+  CursorPrompt,
+  CursorToolCall,
+  Deps,
+  Env,
+} from "./types";
 
 export type ApiKind = "chat" | "responses";
 
@@ -872,36 +879,69 @@ export function responseDoneEvents(input: {
 export function modelList(
   options: { opencode?: boolean; sdk?: boolean } = {},
 ): Record<string, unknown> {
-  return {
-    object: "list",
-    data: [
-      modelItem("default", "Auto"),
-      modelItem(
-        "composer-2.5",
-        options.opencode ? "Composer 2.5" : "Cursor Composer 2.5",
-      ),
-      ...(options.sdk
-        ? [modelItem("composer-2.5-sdk", "Composer 2.5 SDK Harness")]
-        : []),
-      modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
-      modelItem("composer-2", "Cursor Composer 2"),
-      modelItem("composer-latest", "Cursor Composer latest alias"),
-      modelItem("gpt-5.3-codex", "Codex 5.3"),
-      modelItem("gpt-5.2-codex", "Codex 5.2"),
-      modelItem("gpt-5.1-codex-max", "Codex 5.1 Max"),
-      modelItem("gpt-5.1-codex-mini", "Codex 5.1 Mini"),
-      modelItem("gpt-5.2", "GPT-5.2"),
-      modelItem("gpt-5.1", "GPT-5.1"),
-      modelItem("gpt-5-mini", "GPT-5 Mini"),
-      modelItem("gemini-3.1-pro", "Gemini 3.1 Pro"),
-      modelItem("gemini-3.5-flash", "Gemini 3.5 Flash"),
-      modelItem("gemini-3-flash", "Gemini 3 Flash"),
-      modelItem("gemini-2.5-flash", "Gemini 2.5 Flash"),
-      modelItem("grok-build-0.1", "Grok Build 0.1"),
-      modelItem("grok-4.3", "Grok 4.3"),
-      modelItem("kimi-k2.5", "Kimi K2.5"),
-    ],
-  };
+  const data = [
+    modelItem("auto", "Auto"),
+    modelItem(
+      "composer-2.5",
+      options.opencode ? "Composer 2.5" : "Cursor Composer 2.5",
+    ),
+    ...(options.sdk
+      ? [modelItem("composer-2.5-sdk", "Composer 2.5 SDK Harness")]
+      : []),
+    modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
+    modelItem("composer-2", "Cursor Composer 2"),
+    modelItem("composer-latest", "Cursor Composer latest alias"),
+    modelItem("gemini-2.5-flash", "Gemini 2.5 Flash"),
+    modelItem("gemini-3-flash", "Gemini 3 Flash"),
+    modelItem("gemini-3.1-pro", "Gemini 3.1 Pro"),
+    modelItem("gemini-3.5-flash", "Gemini 3.5 Flash"),
+    modelItem("gpt-5-mini", "GPT-5 Mini"),
+    modelItem("gpt-5.1-codex-max", "Codex 5.1 Max"),
+    modelItem("gpt-5.1-codex-mini", "Codex 5.1 Mini"),
+    modelItem("gpt-5.1", "GPT-5.1"),
+    modelItem("gpt-5.2-codex", "Codex 5.2"),
+    modelItem("gpt-5.2", "GPT-5.2"),
+    modelItem("gpt-5.3-codex", "Codex 5.3"),
+    modelItem("gpt-5.5", "GPT-5.5"),
+    modelItem("grok-4.3", "Grok 4.3"),
+    modelItem("grok-build-0.1", "Grok Build 0.1"),
+    modelItem("kimi-k2.5", "Kimi K2.5"),
+  ];
+  return finalizeModelList(data);
+}
+
+export async function modelListForAuth(
+  env: Env,
+  deps: Deps,
+  apiKey: string,
+  options: { opencode?: boolean; sdk?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const fallback = modelList(options);
+  try {
+    const remote = await listCursorModels(env, deps, apiKey);
+    const records = cursorModelRecordsFromResponse(remote);
+    if (!records.length) return fallback;
+
+    const merged = new Map<string, Record<string, unknown>>();
+    for (const record of records) {
+      const id = normalizeModelListId(record.id);
+      const name =
+        (typeof record.displayName === "string" && record.displayName.trim()) ||
+        (typeof record.name === "string" && record.name.trim()) ||
+        id;
+      merged.set(id, modelItem(id, name));
+    }
+
+    for (const entry of fallback.data as Array<Record<string, unknown>>) {
+      const id =
+        typeof entry.id === "string" ? normalizeModelListId(entry.id) : "";
+      if (id && !merged.has(id)) merged.set(id, { ...entry, id });
+    }
+
+    return finalizeModelList([...merged.values()]);
+  } catch {
+    return fallback;
+  }
 }
 
 export function toOpenAiToolCalls(input: {
@@ -1037,6 +1077,37 @@ function modelItem(id: string, name: string) {
       ? { cost: { input: pricing.input, output: pricing.output } }
       : {}),
   };
+}
+
+function normalizeModelListId(id: string): string {
+  const trimmed = id.trim();
+  return trimmed.toLowerCase() === "default" ? "auto" : trimmed;
+}
+
+function modelListSortKey(entry: Record<string, unknown>): string {
+  const id = typeof entry.id === "string" ? entry.id.trim().toLowerCase() : "";
+  return id;
+}
+
+function sortModelListData(
+  data: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return [...data].sort((left, right) => {
+    const leftId = modelListSortKey(left);
+    const rightId = modelListSortKey(right);
+    if (leftId === "auto") return -1;
+    if (rightId === "auto") return 1;
+    return leftId.localeCompare(rightId, "en", {
+      sensitivity: "base",
+      numeric: true,
+    });
+  });
+}
+
+function finalizeModelList(
+  data: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  return { object: "list", data: sortModelListData(data) };
 }
 
 export function completionCharsFromOutput(
